@@ -23,18 +23,6 @@ This keeps the model-facing schema small and the prompt overhead stable while al
 
 ### Background delegation
 
-Talk to pi normally—the `subagent` tool is designed for the model rather than as a command you invoke yourself:
-
-> **You:** Locate the authorization checks and review whether this patch bypasses any of them. Keep working on the refactor while the review runs.
->
-> **pi:** I’ll delegate the bounded review and continue the independent refactor.
->
-> **pi:** launches a durable `reviewer` task, receives `sa_…`, and continues its own work instead of polling.
->
-> **Notification:** the reviewer task completed.
->
-> **pi:** verifies the delegated findings against the repository, then incorporates them into its answer.
-
 Every delegation creates a persistent background task and returns immediately unless the current turn explicitly needs to wait. Waiting can end at completion or at an optional case-sensitive readiness phrase; a timeout or cancelled wait never stops the child.
 
 The returned task ID lets the parent inspect a repeatable snapshot, wait again, send a bounded follow-up, or explicitly terminate the child process tree. Task IDs belong to the parent session that launched them, and reading a snapshot never consumes transcript output.
