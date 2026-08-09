@@ -2,7 +2,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/4fuu/pi-subagent)](https://github.com/4fuu/pi-subagent/releases/latest)
 
-Delegate bounded work to isolated, durable [pi](https://github.com/earendil-works/pi) sessions using roles you can read, version, and override as Markdown files.
+Delegate bounded work to durable [pi](https://github.com/earendil-works/pi) sessions with fresh context, using roles you can read, version, and override as Markdown files.
 
 ## Why pi-subagent
 
@@ -31,9 +31,9 @@ A steering `message` can be combined with `wait`; it cannot be combined with `st
 
 Up to four children run concurrently. Additional tasks queue durably and are promoted in creation order. Metadata, controls, notifications, and a rolling 2 MiB visible JSONL transcript live under `$PI_CODING_AGENT_DIR/subagents/tasks/` with private permissions. Records survive `/reload`; dead detached runners are reported as `orphaned`; terminal records are cleaned after seven days or above 200 retained tasks.
 
-### Prompt and runtime isolation
+### Fresh context, shared workspace
 
-A child inherits the parent working directory, environment-backed authentication, model, and thinking level unless its role overrides model or thinking. It does **not** inherit the parent transcript or load parent extensions, skills, prompt templates, themes, or context files.
+A child runs in a separate process with a fresh in-memory session and system prompt, but shares the parent's working directory, filesystem, and inherited environment. Its file changes are immediately visible in the same workspace; it is not a sandbox, container, or separate worktree. The child inherits the parent's model and thinking level unless its role overrides them, but does **not** inherit the parent transcript or load parent extensions, skills, prompt templates, themes, or context files.
 
 The child receives three deliberate inputs:
 
@@ -136,7 +136,7 @@ npm test
 npm pack --dry-run
 ```
 
-The test suite covers role discovery and precedence, strict frontmatter, prompt isolation, task persistence, concurrency, session ownership, steering, notifications, turn limits, and process-tree termination.
+The test suite covers role discovery and precedence, strict frontmatter, fresh prompt context, task persistence, concurrency, session ownership, steering, notifications, turn limits, and process-tree termination.
 
 ## License
 

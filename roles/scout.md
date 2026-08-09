@@ -1,6 +1,6 @@
 ---
 name: scout
-description: Locate relevant code and facts quickly without changing files.
+description: Locate relevant code and facts without changing files.
 tools: read,grep,find,ls
 maxTurns: 12
 ---

@@ -1,6 +1,6 @@
 ---
 name: oracle
-description: Analyze a difficult technical decision and recommend a defensible approach.
+description: Analyze a difficult technical decision and recommend an approach.
 tools: read,grep,find,ls
 maxTurns: 18
 ---

@@ -96,9 +96,8 @@ export function rolePrompt(cwd: string, options?: RoleDiscoveryOptions): string 
 	const rows = [...roles.values()].map((role) => `- ${role.name}: ${role.description}`);
 	return [
 		ROLE_PROMPT_BEGIN,
-		"Current subagent roles (rediscovered for this turn):",
+		"Available subagent roles:",
 		...(rows.length > 0 ? rows : ["- none"]),
-		"Launch one with subagent({ role, task }); use its taskId for later inspection or control.",
 		ROLE_PROMPT_END,
 	].join("\n");
 }

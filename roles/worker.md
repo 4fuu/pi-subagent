@@ -1,6 +1,6 @@
 ---
 name: worker
-description: Implement one bounded engineering task and verify the result.
+description: Implement and verify one bounded engineering task.
 tools: read,grep,find,ls,bash,edit,write
 maxTurns: 30
 ---

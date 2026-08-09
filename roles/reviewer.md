@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Review a change for correctness, regressions, security, and missing tests.
+description: Review a change for correctness, regressions, security, and tests.
 tools: read,grep,find,ls,bash
 maxTurns: 16
 ---

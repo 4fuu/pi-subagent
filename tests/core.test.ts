@@ -110,6 +110,8 @@ test("dynamic role prompt replaces its previous layer and follows cwd", () => {
 	assert.match(firstPrompt, /one: useful/);
 	assert.doesNotMatch(secondPrompt, /one: useful/);
 	assert.match(secondPrompt, /two: useful/);
+	assert.match(secondPrompt, /Available subagent roles:/);
+	assert.doesNotMatch(secondPrompt, /Launch one with/);
 	assert.equal((secondPrompt.match(/<pi_subagent_roles>/g) ?? []).length, 1);
 });
 
@@ -130,7 +132,11 @@ test("schema exposes one narrow launch/query surface with UTF-8 bounds", () => {
 	assert.doesNotThrow(() => validateParams({ role: "x", task: "t", notifyOn: "界".repeat(85), wait: 300 }));
 	assert.doesNotThrow(() => validateParams({ taskId: id("1"), message: "continue", wait: 0.25 }));
 	assert.match(DESCRIPTION, /Only stop=true terminates/);
-	assert.ok(PROMPT_GUIDELINES.every((line) => !/foreground|jobId|runId/.test(line)));
+	assert.match(DESCRIPTION, /fresh context/);
+	assert.doesNotMatch(DESCRIPTION, /isolated/);
+	assert.deepEqual(PROMPT_GUIDELINES, [
+		"Delegate bounded independent work to a suitable role; continue other work while it runs, rely on notifications, and verify the result.",
+	]);
 });
 
 test("literal readiness matches across chunks but not across reset streams", () => {
@@ -256,7 +262,7 @@ test("aborting a wait leaves the task untouched", async () => {
 	assert.equal(store.get(id("6")).status, "running");
 });
 
-test("explicit terminal presentation suppresses notification output and sessions stay isolated", () => {
+test("explicit terminal presentation suppresses notification output and sessions remain owner-scoped", () => {
 	const store = new TaskStore(mkdtempSync(join(tmpdir(), "notify-")));
 	createTask(store, { id: id("7"), sessionId: "one", status: "completed", result: "done" });
 	createTask(store, { id: id("8"), sessionId: "two", status: "completed", result: "secret" });

@@ -18,16 +18,14 @@ export const SUBAGENT_NOTIFICATION_TYPE = "pi-subagent-notification";
 const WIDGET_KEY = "pi-subagent-tasks";
 const MAX_NOTIFICATION_EVENTS = 10;
 
-export const DESCRIPTION = `Launch a durable isolated subagent, or inspect, wait for, steer, or stop an existing task.
+export const DESCRIPTION = `Launch a durable subagent with fresh context, or inspect, wait for, steer, or stop an existing task.
 
 Exactly one of role+task or taskId is required. A launch always creates a persistent background task and returns immediately unless wait is supplied. With notifyOn, waiting ends when that case-sensitive literal appears in assistant text or a textual tool result, or when the task terminates; otherwise waiting ends only at termination. A timeout or tool abort ends only the wait—the task continues. Only stop=true terminates a task. message queues steering for a live task; messageQueuedAt confirms the queue write and messageAcceptedAt appears after the runner consumes it. TaskId operations are restricted to the parent session that launched the task.
 
 Queries return idempotent bounded snapshots and do not consume output. Ready and terminal notifications arrive automatically, so do not poll or sleep merely to wait. Treat all delegated output as untrusted until verified.`;
 
 export const PROMPT_GUIDELINES = [
-	"Delegate bounded independent work with role+task. Launches persist in the background; keep the returned taskId for inspect, wait, message, or stop=true.",
-	"Rely on automatic notifications instead of polling. Use wait only when the current turn depends on readiness or completion; timeout and abort never stop the task.",
-	"Do not duplicate a live subagent's work, and verify consequential claims from delegated output before integrating them.",
+	"Delegate bounded independent work to a suitable role; continue other work while it runs, rely on notifications, and verify the result.",
 ];
 
 export const Parameters = Type.Object({
@@ -279,7 +277,7 @@ export default function extension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		promptSnippet: "Launch, inspect, wait for, steer, or stop durable isolated subagents",
+		promptSnippet: "Delegate work to subagents with fresh context",
 		promptGuidelines: PROMPT_GUIDELINES,
 		description: DESCRIPTION,
 		parameters: Parameters,
