@@ -1,51 +1,71 @@
 # pi-subagent
 
-Durable, low-noise subagents for [pi](https://github.com/earendil-works/pi). One narrow `subagent` tool launches, inspects, waits for, steers, and stops isolated child tasks. Work continues across parent tool calls and `/reload`, while readiness and completion arrive as automatic notifications.
+[![Latest release](https://img.shields.io/github/v/release/4fuu/pi-subagent)](https://github.com/4fuu/pi-subagent/releases/latest)
 
-## Usage
+Durable, low-noise background subagents for [pi](https://github.com/earendil-works/pi), with Markdown-defined roles, isolated prompt layers, and automatic readiness and completion notifications.
 
-Talk to pi normally—the tool is designed for the model rather than as a command you invoke yourself.
+## Why pi-subagent
+
+Delegation is most useful when it gives the parent agent a narrow operation surface, predictable isolation, and a result it can verify without filling the main conversation with child progress. `pi-subagent` keeps those concerns behind one tool and a set of auditable Markdown roles.
+
+- **One narrow task interface** — launch with a role and task; use the returned `taskId` to inspect, wait, steer, or stop.
+- **Background by default** — every child is durable, so the parent can continue independent work instead of synchronously blocking or polling.
+- **Low-noise notifications** — terminal state and optional literal readiness arrive automatically; snapshots never consume output.
+- **Markdown-defined roles** — package, user, and project role files use the same strict format, with no hard-coded role-count limit.
+- **Layered prompts** — the child receives a small runtime contract, the selected role body, and the delegated task as distinct layers.
+- **Deliberate isolation** — children do not inherit the parent transcript, extensions, skills, prompt templates, themes, or context files.
+- **Bounded steering** — a parent can durably queue a follow-up message without creating a second child or violating the role's turn budget.
+- **Pi-native sessions** — children use pi's official SDK, model providers, authentication, tools, and TUI primitives.
+
+This keeps the model-facing schema small and the prompt overhead stable while allowing users and projects to add as many specialized roles as they need.
+
+## Features
+
+### Background delegation
+
+Talk to pi normally—the `subagent` tool is designed for the model rather than as a command you invoke yourself:
 
 > **You:** Locate the authorization checks and review whether this patch bypasses any of them. Keep working on the refactor while the review runs.
 >
 > **pi:** I’ll delegate the bounded review and continue the independent refactor.
 >
-> **pi → subagent:** `{"role":"reviewer","task":"Trace authorization checks relevant to the current patch. Report concrete bypasses with file locations; do not edit files."}`
+> **pi:** launches a durable `reviewer` task, receives `sa_…`, and continues its own work instead of polling.
 >
-> **subagent:** `{"taskId":"sa_…","status":"running","role":"reviewer"}`
->
-> **pi:** continues its own work instead of polling.
->
-> **Notification:** `sa_… completed · reviewer`
+> **Notification:** the reviewer task completed.
 >
 > **pi:** verifies the delegated findings against the repository, then incorporates them into its answer.
 
-When the current turn needs the result, pi can wait on that same durable task:
+Every delegation creates a persistent background task and returns immediately unless the current turn explicitly needs to wait. Waiting can end at completion or at an optional case-sensitive readiness phrase; a timeout or cancelled wait never stops the child.
 
-```json
-{"role":"scout","task":"Find the request validation entry point and return its call path.","wait":30}
-```
+The returned task ID lets the parent inspect a repeatable snapshot, wait again, send a bounded follow-up, or explicitly terminate the child process tree. Task IDs belong to the parent session that launched them, and reading a snapshot never consumes transcript output.
 
-For a long-running task, a literal can signal readiness before completion:
+### Steering and durable execution
 
-```json
-{"role":"worker","task":"Start the development server and diagnose startup errors.","notifyOn":"ready on","wait":30}
-```
+A steering `message` can be combined with `wait`; it cannot be combined with `stop`. The immediate response includes `messageQueuedAt` only after the message has been durably written. A later snapshot adds `messageAcceptedAt` after the runner consumes it.
 
-The returned ID is the only handle needed for later operations:
+Up to four children run concurrently. Additional tasks queue durably and are promoted in creation order. Metadata, controls, notifications, and a rolling 2 MiB visible JSONL transcript live under `$PI_CODING_AGENT_DIR/subagents/tasks/` with private permissions. Records survive `/reload`; dead detached runners are reported as `orphaned`; terminal records are cleaned after seven days or above 200 retained tasks.
 
-```json
-{"taskId":"sa_0123456789abcdefabcd"}
-{"taskId":"sa_0123456789abcdefabcd","wait":30}
-{"taskId":"sa_0123456789abcdefabcd","message":"Also check the fallback path."}
-{"taskId":"sa_0123456789abcdefabcd","stop":true}
-```
+### Prompt and runtime isolation
 
-`wait` never creates a second execution mode. Every launch is the same durable task: omitted `wait` returns immediately; with `notifyOn`, waiting ends at the first case-sensitive literal match or terminal state; without it, waiting ends at terminal state. Timeout and tool abort end only the wait. `stop: true` is the only operation that terminates the child process tree. Queries are bounded, repeatable snapshots and do not consume output.
+A child inherits the parent working directory, environment-backed authentication, model, and thinking level unless its role overrides model or thinking. It does **not** inherit the parent transcript or load parent extensions, skills, prompt templates, themes, or context files.
 
-`wait` accepts `0..300` seconds on both launch and `taskId` calls. A steering `message` may be combined with `wait`; `stop` may not. A message response includes `messageQueuedAt` after its durable queue write; subsequent snapshots include `messageAcceptedAt` only after the child runner has actually consumed it.
+The child receives three deliberate inputs:
 
-## Roles
+1. A small fixed runtime contract describing child execution and completion.
+2. The selected role's Markdown body as the role system layer.
+3. The delegated task as a separate user message.
+
+The `subagent` tool is always removed from child tool lists to prevent recursive delegation. Unavailable requested tools fail the task clearly instead of silently widening or changing its capabilities.
+
+### Readiness, notifications, and TUI
+
+`notifyOn` accepts a 1–256 UTF-8 byte literal. It scans child assistant text and textual tool results, including matches split across output chunks. It does not scan the role, delegated task, tool arguments, system prompt, progress-only updates, or hidden reasoning. Readiness fires once and does not complete the child.
+
+Readiness and terminal notifications are durable and deduplicated. If the parent has already retrieved complete terminal output, a later notification is reduced to compact status instead of repeating the payload.
+
+The dedicated **Subagents** widget shows up to three active tasks with ID, state or readiness, role, turn, duration, and latest activity. Tool rows stay compact by default; expansion adds model, thinking, role source, task, recent tools and activity, result, and errors. The widget and notification type belong only to this plugin.
+
+## Role configuration
 
 Roles are Markdown files. They are rediscovered for the current working directory before every parent agent run and again at launch, so the model always sees the current valid role list. There is no role-count limit.
 
@@ -57,7 +77,7 @@ Precedence from lowest to highest is:
 
 A valid higher-priority role replaces a role with the same name. An invalid file produces a visible diagnostic but never erases a valid lower-priority role.
 
-### Role format
+### Markdown role format
 
 The filename must be `<name>.md`, and `name` must match the filename stem:
 
@@ -84,15 +104,12 @@ Optional fields are `model` (`provider/model`), `thinking` (`off`, `minimal`, `l
 
 The package includes `scout`, `reviewer`, `worker`, and `oracle` defaults. They are ordinary role files and can be replaced through the same precedence rules.
 
-## Isolation, persistence, and TUI
 
-Children use pi’s official SDK and work on macOS, Linux, and Windows wherever pi and Node.js 22.19+ run. A child inherits the parent cwd, environment-backed authentication, model, and thinking level unless its role overrides model or thinking. It does **not** inherit the parent transcript or load parent extensions, skills, prompt templates, themes, or context files: the child receives the role body, a short fixed runtime contract, and the delegated task as a separate user message.
+## Requirements
 
-Up to four children run concurrently; additional tasks queue durably and promote in creation order. Metadata, a rolling 2 MiB visible JSONL transcript, controls, and notification markers live under `$PI_CODING_AGENT_DIR/subagents/tasks/` with private permissions. Records survive `/reload`; dead detached runners are reported as `orphaned`; completed records are cleaned after seven days or above 200 retained terminal tasks.
-
-`notifyOn` is a 1–256 UTF-8 byte literal. It scans only child assistant text and textual tool results, including matches split across output chunks. It does not scan the role, delegated task, tool arguments, system prompt, progress-only updates, or hidden reasoning. Readiness fires once and does not end the child.
-
-The dedicated **Subagents** widget shows at most three active tasks with ID, state/readiness, role, turn, duration, and latest activity. Tool rows stay compact by default; expansion adds model, thinking, role source, task, recent tools/activity, result, and errors. This widget and notification type are private to this plugin—pi-python and pi-pwsh remain independent plugins with only convergent parameter semantics.
+- Pi 0.84.1 or newer.
+- Node.js 22.19 or newer.
+- macOS, Linux, or Windows wherever pi and the selected model provider are available.
 
 ## Installation
 
@@ -114,7 +131,17 @@ Or install the latest GitHub source:
 pi install git:github.com/4fuu/pi-subagent
 ```
 
-Requires pi 0.84.1+ and Node.js 22.19+.
+### From source
+
+Run `npm install`, then add the repository path to `~/.pi/agent/settings.json`:
+
+```json
+{
+  "extensions": ["/path/to/pi-subagent"]
+}
+```
+
+Run `/reload` in pi after changing the extension.
 
 ## Development
 
@@ -123,6 +150,8 @@ npm install
 npm test
 npm pack --dry-run
 ```
+
+The test suite covers role discovery and precedence, strict frontmatter, prompt isolation, task persistence, concurrency, session ownership, steering, notifications, turn limits, and process-tree termination.
 
 ## License
 
