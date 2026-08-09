@@ -1,6 +1,6 @@
 {
   "name": "@4fu/pi-subagent",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Durable, low-noise background subagents for Pi",
   "license": "MIT",
   "author": "4fuu",

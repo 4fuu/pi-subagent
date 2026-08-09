@@ -2,22 +2,20 @@
 
 [![Latest release](https://img.shields.io/github/v/release/4fuu/pi-subagent)](https://github.com/4fuu/pi-subagent/releases/latest)
 
-Durable, low-noise background subagents for [pi](https://github.com/earendil-works/pi), with Markdown-defined roles, isolated prompt layers, and automatic readiness and completion notifications.
+Delegate bounded work to isolated, durable [pi](https://github.com/earendil-works/pi) sessions using roles you can read, version, and override as Markdown files.
 
 ## Why pi-subagent
 
-Delegation is most useful when it gives the parent agent a narrow operation surface, predictable isolation, and a result it can verify without filling the main conversation with child progress. `pi-subagent` keeps those concerns behind one tool and a set of auditable Markdown roles.
+Useful delegation needs a clear role boundary and a clean child context. `pi-subagent` makes both explicit, while letting the parent continue independent work and receive the result later.
 
-- **One narrow task interface** — launch with a role and task; use the returned `taskId` to inspect, wait, steer, or stop.
-- **Background by default** — every child is durable, so the parent can continue independent work instead of synchronously blocking or polling.
-- **Low-noise notifications** — terminal state and optional literal readiness arrive automatically; snapshots never consume output.
-- **Markdown-defined roles** — package, user, and project role files use the same strict format, with no hard-coded role-count limit.
-- **Layered prompts** — the child receives a small runtime contract, the selected role body, and the delegated task as distinct layers.
-- **Deliberate isolation** — children do not inherit the parent transcript, extensions, skills, prompt templates, themes, or context files.
-- **Bounded steering** — a parent can durably queue a follow-up message without creating a second child or violating the role's turn budget.
-- **Pi-native sessions** — children use pi's official SDK, model providers, authentication, tools, and TUI primitives.
+- **Roles are files, not hidden code** — package defaults, user roles, and project roles share one strict Markdown format and precedence model.
+- **Fresh context by design** — a child receives its role and delegated task, not a copy of the parent transcript or every installed extension and prompt.
+- **The parent keeps moving** — children run durably in the background, queue when concurrency is full, and survive `/reload`.
+- **Steer without starting over** — follow-up messages are durably queued and separately acknowledged when the child accepts them.
+- **Bounded delegation** — each role controls tools, model, thinking level, and turn limit; recursive subagent access is always removed.
+- **Results without progress chatter** — readiness and terminal notifications, bounded snapshots, and a compact TUI keep child activity out of the main conversation until it matters.
 
-This keeps the model-facing schema small and the prompt overhead stable while allowing users and projects to add as many specialized roles as they need.
+Child sessions are created through pi's official SDK and use the same configured providers and authentication as the parent.
 
 ## Features
 
@@ -91,7 +89,6 @@ Required fields are:
 Optional fields are `model` (`provider/model`), `thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`), and `maxTurns` (`1..100`, default `30`). Unknown fields are rejected. The Markdown body is the role system layer and must be non-empty and at most 32 KiB. `subagent` is always removed from the child tool list to prevent recursive delegation; an unavailable tool makes that task fail clearly instead of silently widening capability.
 
 The package includes `scout`, `reviewer`, `worker`, and `oracle` defaults. They are ordinary role files and can be replaced through the same precedence rules.
-
 
 ## Requirements
 
