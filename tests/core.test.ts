@@ -78,10 +78,12 @@ test("strict role parser supports Pi frontmatter and removes recursive access", 
 	assert.equal(role.description, "useful");
 	assert.deepEqual(role.tools, ["read"]);
 	assert.equal(role.maxTurns, 12);
-	assert.equal(parseRole(markdown().replace("maxTurns: 12\n", ""), "/a/x.md").maxTurns, 30);
+	assert.equal(parseRole(markdown().replace("maxTurns: 12\n", ""), "/a/x.md").maxTurns, 256);
+	assert.equal(parseRole(markdown().replace("maxTurns: 12", "maxTurns: 500"), "/a/x.md").maxTurns, 500);
 	assert.throws(() => parseRole(markdown().replace("tools:", "wat: z\ntools:"), "/a/x.md"), /unknown/);
 	assert.throws(() => parseRole(markdown("y"), "/a/x.md"), /filename/);
-	assert.throws(() => parseRole(markdown().replace("maxTurns: 12", "maxTurns: 0"), "/a/x.md"), /1 to 100/);
+	assert.throws(() => parseRole(markdown().replace("maxTurns: 12", "maxTurns: 0"), "/a/x.md"), /1 to 500/);
+	assert.throws(() => parseRole(markdown().replace("maxTurns: 12", "maxTurns: 501"), "/a/x.md"), /1 to 500/);
 });
 
 test("role discovery is package < user < project and invalid overrides preserve valid roles", () => {

@@ -33,8 +33,8 @@ export function parseRole(text: string, source: string): Role {
 
 	const body = rawBody.trim();
 	if (!body || Buffer.byteLength(body) > 32768) throw new Error("body must be non-empty and at most 32 KiB");
-	if (raw.maxTurns !== undefined && (!Number.isInteger(raw.maxTurns) || (raw.maxTurns as number) < 1 || (raw.maxTurns as number) > 100)) {
-		throw new Error("maxTurns must be an integer from 1 to 100");
+	if (raw.maxTurns !== undefined && (!Number.isInteger(raw.maxTurns) || (raw.maxTurns as number) < 1 || (raw.maxTurns as number) > 500)) {
+		throw new Error("maxTurns must be an integer from 1 to 500");
 	}
 	if (raw.model !== undefined && (typeof raw.model !== "string" || !/^[^/\s]+\/\S+$/.test(raw.model))) {
 		throw new Error("model must be provider/model");
@@ -49,7 +49,7 @@ export function parseRole(text: string, source: string): Role {
 		tools: [...new Set(tools.filter((tool) => tool !== "subagent"))],
 		model: raw.model as string | undefined,
 		thinking: raw.thinking as string | undefined,
-		maxTurns: (raw.maxTurns as number | undefined) ?? 30,
+		maxTurns: (raw.maxTurns as number | undefined) ?? 256,
 		body,
 		source,
 	};

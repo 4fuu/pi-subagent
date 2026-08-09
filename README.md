@@ -86,7 +86,7 @@ Required fields are:
 - `description`: one non-empty line, at most 160 characters
 - `tools`: a YAML string array or comma-separated string
 
-Optional fields are `model` (`provider/model`), `thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`), and `maxTurns` (`1..100`, default `30`). Unknown fields are rejected. The Markdown body is the role system layer and must be non-empty and at most 32 KiB. `subagent` is always removed from the child tool list to prevent recursive delegation; an unavailable tool makes that task fail clearly instead of silently widening capability.
+Optional fields are `model` (`provider/model`), `thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`), and `maxTurns` (`1..500`, default `256`). Unknown fields are rejected. The Markdown body is the role system layer and must be non-empty and at most 32 KiB. `subagent` is always removed from the child tool list to prevent recursive delegation; an unavailable tool makes that task fail clearly instead of silently widening capability.
 
 The package includes one default role, `oracle`. It is an ordinary role file and can be replaced through the same precedence rules; add any other roles as user or project Markdown files.
 
