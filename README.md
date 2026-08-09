@@ -13,7 +13,7 @@ Useful delegation needs a clear role boundary and a clean child context. `pi-sub
 - **The parent keeps moving** — children run durably in the background, queue when concurrency is full, and survive `/reload`.
 - **Steer without starting over** — follow-up messages are durably queued and separately acknowledged when the child accepts them.
 - **Bounded delegation** — each role controls tools, model, thinking level, and turn limit; recursive subagent access is always removed.
-- **Results without progress chatter** — readiness and terminal notifications, bounded snapshots, and a compact TUI keep child activity out of the main conversation until it matters.
+- **Results without progress chatter** — readiness and terminal notifications, bounded snapshots, and an aggregated background-task TUI keep child activity out of the main conversation until it matters.
 
 Child sessions are created through pi's official SDK and use the same configured providers and authentication as the parent.
 
@@ -47,9 +47,9 @@ The `subagent` tool is always removed from child tool lists to prevent recursive
 
 `notifyOn` accepts a 1–256 UTF-8 byte literal. It scans child assistant text and textual tool results, including matches split across output chunks. It does not scan the role, delegated task, tool arguments, system prompt, progress-only updates, or hidden reasoning. Readiness fires once and does not complete the child.
 
-Readiness and terminal notifications are durable and deduplicated. If the parent has already retrieved complete terminal output, a later notification is reduced to compact status instead of repeating the payload.
+Readiness and terminal notifications are durable and deduplicated. Successfully retrieving a ready snapshot cancels its pending readiness notification; retrieving a terminal snapshot cancels all pending notifications for that task.
 
-The dedicated **Subagents** widget shows up to three active tasks with ID, state or readiness, role, turn, duration, and latest activity. Tool rows stay compact by default; expansion adds model, thinking, role source, task, recent tools and activity, result, and errors. The widget and notification type belong only to this plugin.
+Notifications and active-task status are aggregated with whichever other `@4fu` background-task plugins are installed. Any combination cooperates through one shared coordinator and widget while each plugin keeps its own independent runtime and durable task store. Tool rows stay compact by default; expansion adds model, thinking, role source, task, recent tools and activity, result, and errors.
 
 ## Role configuration
 
@@ -88,7 +88,7 @@ Required fields are:
 
 Optional fields are `model` (`provider/model`), `thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`), and `maxTurns` (`1..100`, default `30`). Unknown fields are rejected. The Markdown body is the role system layer and must be non-empty and at most 32 KiB. `subagent` is always removed from the child tool list to prevent recursive delegation; an unavailable tool makes that task fail clearly instead of silently widening capability.
 
-The package includes `scout`, `reviewer`, `worker`, and `oracle` defaults. They are ordinary role files and can be replaced through the same precedence rules.
+The package includes one default role, `oracle`. It is an ordinary role file and can be replaced through the same precedence rules; add any other roles as user or project Markdown files.
 
 ## Requirements
 

@@ -4,18 +4,16 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { registerTaskCoordinator, type TaskCoordinator } from "@4fu/pi-task-coordinator";
 import { Type } from "typebox";
-import { duration, renderCall, renderResult } from "./render.ts";
+import { renderCall, renderResult } from "./render.ts";
 import { appendCurrentRolePrompt, discoverRoles } from "./roles.ts";
 import { Runtime } from "./runtime.ts";
 import { type Params, validateParams } from "./schema.ts";
 import { TaskStore } from "./store.ts";
-import type { Status, TaskRecord } from "./types.ts";
+import type { TaskRecord } from "./types.ts";
 import { terminal } from "./types.ts";
 
-export const SUBAGENT_NOTIFICATION_TYPE = "pi-subagent-notification";
-const WIDGET_KEY = "pi-subagent-tasks";
 const MAX_NOTIFICATION_EVENTS = 10;
 
 export const DESCRIPTION = `Launch a durable subagent with fresh context, or inspect, wait for, steer, or stop an existing task.
@@ -60,45 +58,18 @@ export const Parameters = Type.Object({
 	})),
 }, { additionalProperties: false });
 
-interface NotificationDetails {
-	taskId: string;
-	event: "ready" | "terminal";
-	status: Status | "ready";
-	role: string;
-	duration: string;
-	result?: string;
-	error?: string;
-	outputAlreadyReceived?: boolean;
-}
-
-interface NotificationBatch {
-	tasks: NotificationDetails[];
-}
-
-function notificationContent(details: NotificationDetails): string {
-	if (details.event === "ready") {
-		return `Subagent task ${details.taskId} (${details.role}) is ready after ${details.duration}. It remains active.`
-			+ (details.outputAlreadyReceived ? " Readiness was already returned by the subagent tool." : "");
-	}
-	const payload = details.result ?? details.error;
-	return `Subagent task ${details.taskId} (${details.role}) is ${details.status} after ${details.duration}.`
-		+ (details.outputAlreadyReceived ? " Final output was already returned by the subagent tool." : "")
-		+ (payload ? `\nUNTRUSTED SUBAGENT OUTPUT: ${JSON.stringify(payload)}` : "");
-}
-
 export class NotificationManager {
 	private timer?: NodeJS.Timeout;
-	private activeToolCalls = 0;
 	private closed = true;
 	private scanning = false;
 	private lastScanError?: string;
 
 	constructor(
-		private readonly pi: ExtensionAPI,
 		private readonly ctx: ExtensionContext,
 		private readonly store: TaskStore,
 		private readonly runtime: Runtime,
 		private readonly sessionId: string,
+		private readonly coordinator: TaskCoordinator,
 		private readonly intervalMs = 500,
 	) {}
 
@@ -114,21 +85,8 @@ export class NotificationManager {
 		this.closed = true;
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
-		this.activeToolCalls = 0;
 		this.lastScanError = undefined;
-		if (this.ctx.hasUI) this.ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "belowEditor" });
-	}
-
-	deferDuringToolCall(): () => void {
-		if (this.closed) return () => {};
-		this.activeToolCalls++;
-		let released = false;
-		return () => {
-			if (released) return;
-			released = true;
-			this.activeToolCalls = Math.max(0, this.activeToolCalls - 1);
-			if (this.activeToolCalls === 0) this.scanSafely();
-		};
+		this.coordinator.updateActiveTasks([]);
 	}
 
 	scanNow(): void {
@@ -139,51 +97,43 @@ export class NotificationManager {
 			const ownTasks = this.store.list()
 				.filter((task) => task.parentSessionId === this.sessionId)
 				.sort((a, b) => a.createdAt - b.createdAt);
-			this.updateWidget(ownTasks);
-			if (this.activeToolCalls > 0) return;
-
-			const candidates: Array<{ task: TaskRecord; event: "ready" | "terminal" }> = [];
-			for (const task of ownTasks) {
-				if (terminal(task.status)) {
-					if (task.ready) this.store.marker(task.id, "ready.notified");
-					if (!this.store.has(task.id, "terminal.notified")) {
-						candidates.push({ task, event: "terminal" });
-					}
-				} else if (task.ready && !this.store.has(task.id, "ready.notified")) {
-					candidates.push({ task, event: "ready" });
-				}
-				if (candidates.length >= MAX_NOTIFICATION_EVENTS) break;
-			}
+			this.coordinator.updateActiveTasks(ownTasks.filter((task) => !terminal(task.status)).map((task) => ({
+				taskKey: `subagent:${task.id}`, source: "subagent", taskId: task.id,
+				status: task.ready ? "ready" : task.status,
+				startedAt: task.startedAt ?? task.createdAt,
+				summary: `${task.role}: ${task.task.replace(/\s+/g, " ").slice(0, 160)}`,
+				meta: `role ${task.role} · turn ${task.turn} · ${(task.activity.at(-1)?.text ?? "").replace(/\s+/g, " ").slice(0, 100)}`,
+			})));
 
 			const claimed: Array<{ task: TaskRecord; event: "ready" | "terminal" }> = [];
-			for (const candidate of candidates) {
-				if (this.store.claimNotification(candidate.task.id, candidate.event)) claimed.push(candidate);
+			for (const task of ownTasks) {
+				let event: "ready" | "terminal" | undefined;
+				if (terminal(task.status)) {
+					this.coordinator.withdrawTask(`subagent:${task.id}`, ["ready"], "superseded");
+					if (task.ready) this.store.completeNotification(task.id, "ready");
+					if (!this.store.has(task.id, "terminal.presented") && !this.store.has(task.id, "terminal.notified")) {
+						event = "terminal";
+					}
+				} else if (task.ready && !this.store.has(task.id, "ready.presented") && !this.store.has(task.id, "ready.notified")) {
+					event = "ready";
+				}
+				if (event && this.store.claimNotification(task.id, event)) claimed.push({ task, event });
+				if (claimed.length >= MAX_NOTIFICATION_EVENTS) break;
 			}
 			if (claimed.length === 0) return;
-			const details = claimed.map(({ task, event }): NotificationDetails => {
-				const outputAlreadyReceived = this.store.has(task.id, `${event}.presented`);
-				return {
-					taskId: task.id,
-					event,
+			for (const { task, event } of claimed) {
+				this.coordinator.offer({
+					eventId: `subagent:${task.id}:${event}`, taskKey: `subagent:${task.id}`, source: "subagent", taskId: task.id, event,
 					status: event === "ready" ? "ready" : task.status,
-					role: task.role,
-					duration: duration((task.endedAt ?? Date.now()) - (task.startedAt ?? task.createdAt)),
-					result: event === "terminal" && !outputAlreadyReceived ? task.result?.slice(0, 12000) : undefined,
-					error: event === "terminal" && !outputAlreadyReceived ? task.error : undefined,
-					outputAlreadyReceived,
-				};
-			});
-			try {
-				this.pi.sendMessage<NotificationBatch>({
-					customType: SUBAGENT_NOTIFICATION_TYPE,
-					content: details.map(notificationContent).join("\n\n"),
-					display: true,
-					details: { tasks: details },
-				}, { deliverAs: "steer", triggerTurn: true });
-				for (const candidate of claimed) this.store.completeNotification(candidate.task.id, candidate.event);
-			} catch (error) {
-				for (const candidate of claimed) this.store.releaseNotification(candidate.task.id, candidate.event);
-				throw error;
+					durationMs: (task.endedAt ?? Date.now()) - (task.startedAt ?? task.createdAt),
+					summary: `${task.role}: ${task.task.replace(/\s+/g, " ").slice(0, 240)}`,
+					output: event === "terminal" ? (task.result ?? task.error)?.slice(0, 12000) : undefined,
+					ok: event === "ready" || task.status === "completed", occurredAt: task.endedAt ?? task.updatedAt,
+				}, {
+					onSubmitted: () => this.store.submitNotification(task.id, event),
+					onDelivered: () => this.store.completeNotification(task.id, event),
+					onWithdrawn: (reason) => this.store.withdrawNotification(task.id, event, reason),
+				});
 			}
 		} finally {
 			this.scanning = false;
@@ -202,49 +152,13 @@ export class NotificationManager {
 		}
 	}
 
-	private updateWidget(tasks: TaskRecord[]): void {
-		if (!this.ctx.hasUI) return;
-		const active = tasks.filter((task) => !terminal(task.status));
-		if (active.length === 0) {
-			this.ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "belowEditor" });
-			return;
-		}
-		const rows = active.slice(0, 3).map((task) => {
-			const status = task.ready ? "ready" : task.status;
-			const latest = (task.activity.at(-1)?.text ?? task.task).replace(/\s+/g, " ").slice(0, 70);
-			return `${task.id} · ${status} · ${task.role} · turn ${task.turn} · ${duration(Date.now() - (task.startedAt ?? task.createdAt))}\n  ${latest}`;
-		});
-		if (active.length > 3) rows.push(`+${active.length - 3} more`);
-		if (this.ctx.mode !== "tui") {
-			this.ctx.ui.setWidget(WIDGET_KEY, ["Subagents", ...rows], { placement: "belowEditor" });
-			return;
-		}
-		this.ctx.ui.setWidget(WIDGET_KEY, (_tui, theme) => new Text([
-			theme.fg("accent", theme.bold("Subagents")),
-			...rows.map((row) => `\n${theme.fg("dim", row)}`),
-		].join(""), 0, 0), { placement: "belowEditor" });
-	}
-}
-
-function registerNotificationRenderer(pi: ExtensionAPI): void {
-	pi.registerMessageRenderer<NotificationBatch>(SUBAGENT_NOTIFICATION_TYPE, (message, { expanded }, theme) => {
-		const lines: string[] = [];
-		for (const task of message.details?.tasks ?? []) {
-			const tone = task.status === "completed" || task.status === "ready" ? "success"
-				: task.status === "failed" || task.status === "orphaned" ? "error" : "warning";
-			lines.push(`${theme.fg(tone, "●")} ${theme.fg("toolTitle", "subagent")} ${theme.fg("accent", task.taskId)} ${theme.fg(tone, String(task.status))} ${theme.fg("dim", `· ${task.role} · ${task.duration}`)}`);
-			if (expanded && (task.result || task.error)) {
-				lines.push(theme.fg(task.error ? "error" : "toolOutput", `  ${(task.result ?? task.error)!.slice(0, 12000)}`));
-			}
-		}
-		return new Text(lines.join("\n"), 0, 0);
-	});
 }
 
 export default function extension(pi: ExtensionAPI): void {
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	const store = new TaskStore(join(getAgentDir(), "subagents", "tasks"));
 	const runtime = new Runtime(store);
+	const coordinator = registerTaskCoordinator(pi, "subagent");
 	let notifications: NotificationManager | undefined;
 	let diagnosticsSignature = "";
 
@@ -256,7 +170,6 @@ export default function extension(pi: ExtensionAPI): void {
 		if (ctx.hasUI) ctx.ui.notify(`pi-subagent ignored invalid role files:\n${diagnostics.slice(0, 5).join("\n")}`, "warning");
 	};
 
-	registerNotificationRenderer(pi);
 	pi.on("before_agent_start", (event, ctx) => ({
 		systemPrompt: appendCurrentRolePrompt(event.systemPrompt, ctx.cwd),
 	}));
@@ -264,14 +177,16 @@ export default function extension(pi: ExtensionAPI): void {
 		notifications?.close();
 		store.cleanup();
 		const sessionId = ctx.sessionManager.getSessionId();
+		coordinator.startSession(ctx, sessionId);
 		runtime.reconcile(sessionId);
 		reportRoleDiagnostics(ctx);
-		notifications = new NotificationManager(pi, ctx, store, runtime, sessionId);
+		notifications = new NotificationManager(ctx, store, runtime, sessionId, coordinator);
 		notifications.start();
 	});
 	pi.on("session_shutdown", () => {
 		notifications?.close();
 		notifications = undefined;
+		coordinator.closeSession();
 	});
 
 	pi.registerTool({
@@ -283,7 +198,7 @@ export default function extension(pi: ExtensionAPI): void {
 		parameters: Parameters,
 		executionMode: "parallel",
 		async execute(_toolCallId, params: Params, signal, _onUpdate, ctx) {
-			const release = notifications?.deferDuringToolCall() ?? (() => {});
+			let release = params.taskId ? coordinator.holdTask(`subagent:${params.taskId}`) : coordinator.holdSource();
 			try {
 				const sessionId = ctx.sessionManager.getSessionId();
 				const mode = validateParams(params);
@@ -300,6 +215,9 @@ export default function extension(pi: ExtensionAPI): void {
 						model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 						thinking: ctx.thinkingLevel,
 					});
+					const releaseSource = release;
+					release = coordinator.holdTask(`subagent:${task.id}`);
+					releaseSource();
 				} else {
 					task = store.assertOwner(params.taskId!, sessionId);
 					if (params.stop) task = await runtime.stop(task.id, sessionId);
@@ -312,9 +230,14 @@ export default function extension(pi: ExtensionAPI): void {
 				if (params.wait !== undefined && !terminal(task.status)) {
 					task = await runtime.wait(task.id, sessionId, params.wait, !!task.notifyOn, signal);
 				}
-				if (task.ready) store.marker(task.id, "ready.presented");
-				if (terminal(task.status)) store.marker(task.id, "terminal.presented");
 				const snapshot = { ...store.snapshot(task), messageQueuedAt };
+				if (terminal(task.status)) {
+					store.marker(task.id, "terminal.presented");
+					coordinator.withdrawTask(`subagent:${task.id}`, ["ready", "terminal"], "presented");
+				} else if (task.ready) {
+					store.marker(task.id, "ready.presented");
+					coordinator.withdrawTask(`subagent:${task.id}`, ["ready"], "presented");
+				}
 				return {
 					content: [{ type: "text" as const, text: JSON.stringify(snapshot) }],
 					details: task,

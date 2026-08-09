@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ChildProcess } from "node:child_process";
+import type { TaskCoordinator, TaskNotificationCallbacks, TaskNotificationUpdate } from "@4fu/pi-task-coordinator";
 import { DESCRIPTION, NotificationManager, PROMPT_GUIDELINES } from "../src/index.ts";
 import { resultLines } from "../src/render.ts";
 import { appendCurrentRolePrompt, discoverRoles, parseRole } from "../src/roles.ts";
@@ -62,6 +63,14 @@ function fakeSpawn(): ChildProcess {
 	Object.defineProperty(child, "pid", { value: 777777, configurable: true });
 	child.unref = () => child;
 	return child;
+}
+
+function fakeCoordinator(offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [], active: unknown[] = []): TaskCoordinator {
+	return {
+		offer(update: TaskNotificationUpdate, callbacks?: TaskNotificationCallbacks) { offers.push({ update, callbacks }); },
+		withdrawTask() {},
+		updateActiveTasks(tasks: unknown[]) { active.push(...tasks); },
+	} as unknown as TaskCoordinator;
 }
 
 test("strict role parser supports Pi frontmatter and removes recursive access", () => {
@@ -209,21 +218,21 @@ test("finishing rejects new steering without dropping an already queued message"
 	assert.throws(() => runtime.message(id("40"), "owner", "too late"), /no longer accepting/);
 });
 
-test("notification leases retry after failure and recover after expiry", () => {
+test("notification claims transition through submitted and delivered and stale leases recover", () => {
 	const store = new TaskStore(mkdtempSync(join(tmpdir(), "notify-lease-")));
 	createTask(store, { id: id("41"), sessionId: "one", status: "completed", result: "done" });
-	let attempts = 0;
-	const pi = { sendMessage: () => {
-		attempts++;
-		if (attempts === 1) throw new Error("injected send failure");
-	} } as never;
+	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
 	const ctx = { hasUI: false, mode: "print", ui: { setWidget() {}, notify() {} } } as never;
 	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
-	const manager = new NotificationManager(pi, ctx, store, runtime, "one", 10000);
+	const manager = new NotificationManager(ctx, store, runtime, "one", fakeCoordinator(offers), 10000);
 	manager.start();
-	assert.equal(store.has(id("41"), "terminal.notifying"), false);
+	assert.equal(offers.length, 1);
+	assert.equal(store.has(id("41"), "terminal.notifying"), true);
+	offers[0]!.callbacks?.onSubmitted?.("delivery");
+	assert.equal(store.has(id("41"), "terminal.submitted"), true);
 	manager.scanNow();
-	assert.equal(attempts, 2);
+	assert.equal(offers.length, 1);
+	offers[0]!.callbacks?.onDelivered?.("delivery");
 	assert.equal(store.has(id("41"), "terminal.notified"), true);
 	manager.close();
 
@@ -233,6 +242,73 @@ test("notification leases retry after failure and recover after expiry", () => {
 	assert.equal(store.claimNotification(id("42"), "terminal", 0), true);
 	store.completeNotification(id("42"), "terminal");
 	assert.equal(store.has(id("42"), "terminal.notified"), true);
+
+	createTask(store, { id: id("45"), sessionId: "one", status: "completed", result: "recover me" });
+	assert.equal(store.claimNotification(id("45"), "terminal"), true);
+	store.submitNotification(id("45"), "terminal");
+	const submitted = join(store.taskDir(id("45")), "events", "terminal.submitted");
+	const stale = new Date(Date.now() - 60_000);
+	utimesSync(submitted, stale, stale);
+	store.submitNotification(id("45"), "terminal");
+	assert.ok(Date.now() - statSync(submitted).mtimeMs < 1_000);
+	const resumedOffers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
+	const resumed = new NotificationManager(ctx, store, runtime, "one", fakeCoordinator(resumedOffers), 10000);
+	resumed.start();
+	assert.equal(resumedOffers.some(({ update }) => update.taskId === id("45")), false);
+	utimesSync(submitted, stale, stale);
+	resumed.scanNow();
+	assert.equal(resumedOffers.some(({ update }) => update.taskId === id("45")), true);
+	resumed.close();
+});
+
+test("busy notification leases do not starve later offerable tasks", () => {
+	const store = new TaskStore(mkdtempSync(join(tmpdir(), "notify-busy-cap-")));
+	const createdAt = Date.now() - 1_000;
+	for (let index = 50; index < 60; index++) {
+		createTask(store, { id: id(String(index)), sessionId: "one", status: "completed", createdAt: createdAt + index });
+		assert.equal(store.claimNotification(id(String(index)), "terminal"), true);
+		store.submitNotification(id(String(index)), "terminal");
+	}
+	createTask(store, { id: id("60"), sessionId: "one", status: "completed", createdAt: createdAt + 60, result: "available" });
+	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
+	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
+	const manager = new NotificationManager({ hasUI: false, ui: {} } as never, store, runtime, "one", fakeCoordinator(offers), 10000);
+	manager.start();
+	assert.deepEqual(offers.map(({ update }) => update.taskId), [id("60")]);
+	manager.close();
+});
+
+test("withdrawal clears pending delivery and superseded ready cannot re-offer", () => {
+	const store = new TaskStore(mkdtempSync(join(tmpdir(), "notify-withdraw-")));
+	createTask(store, { id: id("43"), sessionId: "one", ready: true, pid: process.pid });
+	assert.equal(store.claimNotification(id("43"), "ready"), true);
+	store.submitNotification(id("43"), "ready");
+	store.withdrawNotification(id("43"), "ready", "presented");
+	assert.equal(store.has(id("43"), "ready.submitted"), false);
+	assert.equal(store.claimNotification(id("43"), "ready"), true);
+	store.withdrawNotification(id("43"), "ready", "superseded");
+	assert.equal(store.has(id("43"), "ready.notified"), true);
+	assert.equal(store.claimNotification(id("43"), "ready"), false);
+	assert.equal(store.claimNotification(id("43"), "terminal"), true);
+	store.submitNotification(id("43"), "terminal");
+	store.withdrawNotification(id("43"), "terminal", "retry-exhausted");
+	assert.equal(store.has(id("43"), "terminal.submitted"), false);
+	assert.equal(store.has(id("43"), "terminal.notifying"), true);
+	assert.equal(store.claimNotification(id("43"), "terminal"), false);
+});
+
+test("terminal state durably supersedes readiness across observer reloads", () => {
+	const store = new TaskStore(mkdtempSync(join(tmpdir(), "notify-terminal-ready-")));
+	createTask(store, { id: id("44"), sessionId: "one", status: "completed", ready: true, result: "done" });
+	store.marker(id("44"), "ready.submitted");
+	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
+	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
+	const manager = new NotificationManager({ hasUI: false, ui: {} } as never, store, runtime, "one", fakeCoordinator(offers), 10000);
+	manager.start();
+	manager.close();
+	assert.equal(store.has(id("44"), "ready.submitted"), false);
+	assert.equal(store.has(id("44"), "ready.notified"), true);
+	assert.deepEqual(offers.map(({ update }) => update.event), ["terminal"]);
 });
 
 test("dead runners become orphaned and queued work promotes without cross-record writes", () => {
@@ -267,19 +343,32 @@ test("explicit terminal presentation suppresses notification output and sessions
 	createTask(store, { id: id("7"), sessionId: "one", status: "completed", result: "done" });
 	createTask(store, { id: id("8"), sessionId: "two", status: "completed", result: "secret" });
 	store.marker(id("7"), "terminal.presented");
-	const sent: unknown[] = [];
-	const widgets: unknown[] = [];
-	const pi = { sendMessage: (message: unknown) => sent.push(message) } as never;
+	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
+	const active: unknown[] = [];
 	const ctx = {
 		hasUI: true,
 		mode: "tui",
-		ui: { setWidget: (...args: unknown[]) => widgets.push(args) },
+		ui: { notify() {} },
 	} as never;
 	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
-	const manager = new NotificationManager(pi, ctx, store, runtime, "one", 10000);
+	const manager = new NotificationManager(ctx, store, runtime, "one", fakeCoordinator(offers, active), 10000);
 	manager.start();
 	manager.close();
-	assert.equal(sent.length, 1);
-	assert.doesNotMatch(JSON.stringify(sent), /done|secret/);
-	assert.ok(widgets.length > 0);
+	assert.equal(offers.length, 0);
+	assert.equal(active.length, 0);
+});
+
+test("ready offers include bounded summaries and active role/turn/activity metadata", () => {
+	const store = new TaskStore(mkdtempSync(join(tmpdir(), "notify-summary-")));
+	createTask(store, { id: id("9"), sessionId: "one", ready: true, pid: process.pid });
+	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
+	const active: unknown[] = [];
+	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
+	const manager = new NotificationManager({ hasUI: false, ui: {} } as never, store, runtime, "one", fakeCoordinator(offers, active), 10000);
+	manager.start();
+	manager.close();
+	assert.equal(offers[0]!.update.eventId, `subagent:${id("9")}:ready`);
+	assert.equal(offers[0]!.update.taskKey, `subagent:${id("9")}`);
+	assert.match(offers[0]!.update.summary!, /^x: hello/);
+	assert.match(JSON.stringify(active), /role x.*turn 2.*19/);
 });

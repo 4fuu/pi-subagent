@@ -11,6 +11,7 @@ import {
 	rmSync,
 	statSync,
 	unlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -236,8 +237,18 @@ export class TaskStore {
 	claimNotification(id: string, event: "ready" | "terminal", leaseMs = 30_000): boolean {
 		return this.lock(`notify-${id}-${event}`, () => {
 			const delivered = `${event}.notified`;
+			const submitted = `${event}.submitted`;
 			const lease = `${event}.notifying`;
 			if (this.has(id, delivered)) return false;
+			if (this.has(id, submitted)) {
+				try {
+					const age = Date.now() - statSync(join(this.taskDir(id), "events", submitted)).mtimeMs;
+					if (age <= leaseMs) return false;
+				} catch {
+					return false;
+				}
+				this.removeMarker(id, submitted);
+			}
 			if (this.has(id, lease)) {
 				try {
 					const age = Date.now() - statSync(join(this.taskDir(id), "events", lease)).mtimeMs;
@@ -251,18 +262,60 @@ export class TaskStore {
 		});
 	}
 
-	completeNotification(id: string, event: "ready" | "terminal"): void {
+	submitNotification(id: string, event: "ready" | "terminal"): void {
 		this.lock(`notify-${id}-${event}`, () => {
-			const delivered = `${event}.notified`;
+			const submitted = `${event}.submitted`;
 			const lease = `${event}.notifying`;
-			if (this.has(id, delivered)) {
+			if (this.has(id, `${event}.notified`)) {
 				this.removeMarker(id, lease);
 				return;
 			}
-			renameSync(
-				join(this.taskDir(id), "events", lease),
-				join(this.taskDir(id), "events", delivered),
-			);
+			if (this.has(id, submitted)) {
+				const path = join(this.taskDir(id), "events", submitted);
+				const now = new Date();
+				utimesSync(path, now, now);
+				this.removeMarker(id, lease);
+				return;
+			}
+			if (this.has(id, lease)) {
+					const path = join(this.taskDir(id), "events", submitted);
+					renameSync(join(this.taskDir(id), "events", lease), path);
+					const now = new Date();
+					utimesSync(path, now, now);
+				}
+		});
+	}
+
+	completeNotification(id: string, event: "ready" | "terminal"): void {
+		this.lock(`notify-${id}-${event}`, () => {
+			if (!this.has(id, `${event}.notified`)) this.marker(id, `${event}.notified`);
+			this.removeMarker(id, `${event}.notifying`);
+			this.removeMarker(id, `${event}.submitted`);
+		});
+	}
+
+	withdrawNotification(
+		id: string,
+		event: "ready" | "terminal",
+		reason: "presented" | "superseded" | "retry-exhausted",
+	): void {
+		this.lock(`notify-${id}-${event}`, () => {
+			if (reason === "superseded") {
+				if (!this.has(id, `${event}.notified`)) this.marker(id, `${event}.notified`);
+				this.removeMarker(id, `${event}.notifying`);
+				this.removeMarker(id, `${event}.submitted`);
+				return;
+			}
+			if (reason === "retry-exhausted") {
+				this.removeMarker(id, `${event}.submitted`);
+				if (!this.has(id, `${event}.notifying`)) this.marker(id, `${event}.notifying`);
+				const path = join(this.taskDir(id), "events", `${event}.notifying`);
+				const now = new Date();
+				utimesSync(path, now, now);
+				return;
+			}
+			this.removeMarker(id, `${event}.notifying`);
+			this.removeMarker(id, `${event}.submitted`);
 		});
 	}
 
