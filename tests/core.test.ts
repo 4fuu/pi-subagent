@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +75,42 @@ function fakeCoordinator(offers: Array<{ update: TaskNotificationUpdate; callbac
 		updateActiveTasks(tasks: unknown[]) { active.push(...tasks); },
 	} as unknown as TaskCoordinator;
 }
+
+test("detached runner starts through jiti with Pi import aliases", () => {
+	const store = new TaskStore(mkdtempSync(join(tmpdir(), "runner-start-")));
+	let invocation: { executable: string; args: readonly string[]; env: NodeJS.ProcessEnv } | undefined;
+	const runtime = new Runtime(store, undefined, ((executable: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv } | undefined) => {
+		invocation = { executable, args, env: options!.env as NodeJS.ProcessEnv };
+		return fakeSpawn();
+	}) as never);
+	runtime.launch({
+		name: "x",
+		description: "test",
+		tools: [],
+		maxTurns: 1,
+		body: "test",
+		source: "/x.md",
+	}, "test", process.cwd(), "one");
+
+	assert.ok(invocation);
+	assert.equal(invocation.executable, process.execPath);
+	assert.equal(invocation.args[0], "--import");
+	assert.match(invocation.args[1]!, /[/\\]src[/\\]loader\.mjs$/);
+	assert.doesNotMatch(invocation.args.join(" "), /experimental-(?:strip|transform)-types/);
+	assert.equal(invocation.env.PI_SUBAGENT_CHILD, "1");
+	const aliases = JSON.parse(invocation.env.JITI_ALIAS!) as Record<string, string>;
+	assert.match(aliases["@earendil-works/pi-coding-agent"]!, /[/\\]pi-coding-agent[/\\]dist[/\\]index\.js$/);
+	assert.match(aliases["@earendil-works/pi-agent-core"]!, /[/\\]pi-agent-core[/\\]dist[/\\]index\.js$/);
+	assert.match(aliases["@earendil-works/pi-ai"]!, /[/\\]pi-ai[/\\]dist[/\\]compat\.js$/);
+	assert.match(aliases["@earendil-works/pi-ai/providers/all"]!, /[/\\]pi-ai[/\\]dist[/\\]providers[/\\]all\.js$/);
+	assert.match(aliases["@earendil-works/pi-tui"]!, /[/\\]pi-tui[/\\]dist[/\\]index\.js$/);
+
+	const smoke = spawnSync(invocation.executable, ["--import", invocation.args[1]!, invocation.args[2]!, "--smoke"], {
+		env: invocation.env,
+		encoding: "utf8",
+	});
+	assert.equal(smoke.status, 0, smoke.stderr || smoke.stdout);
+});
 
 test("strict role parser supports Pi frontmatter and removes recursive access", () => {
 	const role = parseRole(markdown(), "/a/x.md");

@@ -1,5 +1,8 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Role, State, TaskRecord } from "./types.ts";
 import { terminal } from "./types.ts";
@@ -7,6 +10,32 @@ import { TaskStore } from "./store.ts";
 
 export const MAX_CONCURRENCY = 4;
 const START_GRACE_MS = 10_000;
+const localRequire = createRequire(import.meta.url);
+
+function findPackageRoot(name: string, from = localRequire): string {
+	for (const modulesDir of from.resolve.paths(name) ?? []) {
+		const root = join(modulesDir, ...name.split("/"));
+		if (existsSync(join(root, "package.json"))) return root;
+	}
+	throw new Error(`cannot locate ${name} for detached runner`);
+}
+
+function runnerAliases(): string {
+	const codingAgentRoot = findPackageRoot("@earendil-works/pi-coding-agent");
+	const fromCodingAgent = createRequire(join(codingAgentRoot, "package.json"));
+	const agentCoreRoot = findPackageRoot("@earendil-works/pi-agent-core", fromCodingAgent);
+	const aiRoot = findPackageRoot("@earendil-works/pi-ai", fromCodingAgent);
+	const tuiRoot = findPackageRoot("@earendil-works/pi-tui", fromCodingAgent);
+	return JSON.stringify({
+		"@earendil-works/pi-coding-agent": join(codingAgentRoot, "dist", "index.js"),
+		"@earendil-works/pi-agent-core": join(agentCoreRoot, "dist", "index.js"),
+		"@earendil-works/pi-tui": join(tuiRoot, "dist", "index.js"),
+		"@earendil-works/pi-ai/providers/all": join(aiRoot, "dist", "providers", "all.js"),
+		"@earendil-works/pi-ai/compat": join(aiRoot, "dist", "compat.js"),
+		"@earendil-works/pi-ai/oauth": join(aiRoot, "dist", "oauth.js"),
+		"@earendil-works/pi-ai": join(aiRoot, "dist", "compat.js"),
+	});
+}
 
 function active(status: TaskRecord["status"]): boolean {
 	return status === "starting" || status === "running" || status === "finishing";
@@ -125,11 +154,12 @@ export class Runtime {
 	spawn(id: string): void {
 		const task = this.store.get(id);
 		try {
-			const child = this.spawnRunner(process.execPath, ["--experimental-strip-types", this.runner, this.store.dir, id], {
+			const loader = fileURLToPath(new URL("./loader.mjs", import.meta.url));
+			const child = this.spawnRunner(process.execPath, ["--import", loader, this.runner, this.store.dir, id], {
 				cwd: task.cwd,
 				detached: true,
 				stdio: "ignore",
-				env: { ...process.env, PI_SUBAGENT_CHILD: "1" },
+				env: { ...process.env, PI_SUBAGENT_CHILD: "1", JITI_ALIAS: runnerAliases() },
 			});
 			child.once("error", (error) => this.failStart(id, error));
 			child.unref();

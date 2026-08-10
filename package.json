@@ -12,8 +12,7 @@
   "pi": { "extensions": ["./src/index.ts"] },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test:runner": "node --experimental-strip-types src/runner.ts --smoke",
-    "test": "npm run typecheck && npm run test:runner && node --import tsx --test tests/*.test.ts"
+    "test": "npm run typecheck && node --import tsx --test tests/*.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.84.1 <1",
@@ -31,6 +30,7 @@
     "typescript": "^5.9.0"
   },
   "dependencies": {
-    "@4fu/pi-task-coordinator": "0.1.3"
+    "@4fu/pi-task-coordinator": "0.1.3",
+    "jiti": "2.7.0"
   }
 }

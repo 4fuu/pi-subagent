@@ -1,0 +1,1 @@
+import "jiti/register";
