@@ -1,6 +1,6 @@
 {
   "name": "@4fu/pi-subagent",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Durable, low-noise background subagents for Pi",
   "license": "MIT",
   "author": "4fuu",
@@ -30,7 +30,8 @@
     "typescript": "^5.9.0"
   },
   "dependencies": {
-    "@4fu/pi-task-coordinator": "0.1.3",
+    "@4fu/pi-task-coordinator": "0.2.0",
+    "@4fu/pi-tasks": "0.1.0",
     "jiti": "2.7.0"
   }
 }

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ChildProcess } from "node:child_process";
 import type { TaskCoordinator, TaskNotificationCallbacks, TaskNotificationUpdate } from "@4fu/pi-task-coordinator";
+import type { PresentedTask, TaskReporter } from "@4fu/pi-tasks";
 import { DESCRIPTION, NotificationManager, PROMPT_GUIDELINES } from "../src/index.ts";
 import { resultLines } from "../src/render.ts";
 import { appendCurrentRolePrompt, discoverRoles, parseRole } from "../src/roles.ts";
@@ -68,12 +69,18 @@ function fakeSpawn(): ChildProcess {
 	return child;
 }
 
-function fakeCoordinator(offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [], active: unknown[] = []): TaskCoordinator {
+function fakeCoordinator(offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = []): TaskCoordinator {
 	return {
 		offer(update: TaskNotificationUpdate, callbacks?: TaskNotificationCallbacks) { offers.push({ update, callbacks }); },
 		withdrawTask() {},
-		updateActiveTasks(tasks: unknown[]) { active.push(...tasks); },
 	} as unknown as TaskCoordinator;
+}
+
+function fakeReporter(catalogs: PresentedTask[][] = []): TaskReporter {
+	return {
+		publishCatalog(_sessionId, tasks) { catalogs.push(tasks.map((task) => ({ ...task }))); },
+		close() {},
+	};
 }
 
 test("detached runner starts through jiti with Pi import aliases", () => {
@@ -299,7 +306,7 @@ test("notification claims transition through submitted and delivered and stale l
 	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
 	const ctx = { hasUI: false, mode: "print", ui: { setWidget() {}, notify() {} } } as never;
 	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
-	const manager = new NotificationManager(ctx, store, runtime, "one", fakeCoordinator(offers), 10000);
+	const manager = new NotificationManager(ctx, store, runtime, "one", fakeCoordinator(offers), fakeReporter(), 10000);
 	manager.start();
 	assert.equal(offers.length, 1);
 	assert.equal(store.has(id("41"), "terminal.notifying"), true);
@@ -327,7 +334,7 @@ test("notification claims transition through submitted and delivered and stale l
 	store.submitNotification(id("45"), "terminal");
 	assert.ok(Date.now() - statSync(submitted).mtimeMs < 1_000);
 	const resumedOffers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
-	const resumed = new NotificationManager(ctx, store, runtime, "one", fakeCoordinator(resumedOffers), 10000);
+	const resumed = new NotificationManager(ctx, store, runtime, "one", fakeCoordinator(resumedOffers), fakeReporter(), 10000);
 	resumed.start();
 	assert.equal(resumedOffers.some(({ update }) => update.taskId === id("45")), false);
 	utimesSync(submitted, stale, stale);
@@ -347,7 +354,7 @@ test("busy notification leases do not starve later offerable tasks", () => {
 	createTask(store, { id: id("60"), sessionId: "one", status: "completed", createdAt: createdAt + 60, result: "available" });
 	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
 	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
-	const manager = new NotificationManager({ hasUI: false, ui: {} } as never, store, runtime, "one", fakeCoordinator(offers), 10000);
+	const manager = new NotificationManager({ hasUI: false, ui: {} } as never, store, runtime, "one", fakeCoordinator(offers), fakeReporter(), 10000);
 	manager.start();
 	assert.deepEqual(offers.map(({ update }) => update.taskId), [id("60")]);
 	manager.close();
@@ -378,7 +385,7 @@ test("terminal state durably supersedes readiness across observer reloads", () =
 	store.marker(id("44"), "ready.submitted");
 	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
 	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
-	const manager = new NotificationManager({ hasUI: false, ui: {} } as never, store, runtime, "one", fakeCoordinator(offers), 10000);
+	const manager = new NotificationManager({ hasUI: false, ui: {} } as never, store, runtime, "one", fakeCoordinator(offers), fakeReporter(), 10000);
 	manager.start();
 	manager.close();
 	assert.equal(store.has(id("44"), "ready.submitted"), false);
@@ -419,31 +426,47 @@ test("explicit terminal presentation suppresses notification output and sessions
 	createTask(store, { id: id("8"), sessionId: "two", status: "completed", result: "secret" });
 	store.marker(id("7"), "terminal.presented");
 	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
-	const active: unknown[] = [];
+	const catalogs: PresentedTask[][] = [];
 	const ctx = {
 		hasUI: true,
 		mode: "tui",
 		ui: { notify() {} },
 	} as never;
 	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
-	const manager = new NotificationManager(ctx, store, runtime, "one", fakeCoordinator(offers, active), 10000);
+	const manager = new NotificationManager(ctx, store, runtime, "one", fakeCoordinator(offers), fakeReporter(catalogs), 10000);
 	manager.start();
+	assert.deepEqual(catalogs[0]!.map(({ taskId, phase, statusLabel }) => ({ taskId, phase, statusLabel })), [
+		{ taskId: id("7"), phase: "completed", statusLabel: "completed" },
+	]);
 	manager.close();
 	assert.equal(offers.length, 0);
-	assert.equal(active.length, 0);
+	assert.deepEqual(catalogs.at(-1), []);
 });
 
 test("ready offers include bounded summaries and active role/turn/activity metadata", () => {
 	const store = new TaskStore(mkdtempSync(join(tmpdir(), "notify-summary-")));
 	createTask(store, { id: id("9"), sessionId: "one", ready: true, pid: process.pid });
 	const offers: Array<{ update: TaskNotificationUpdate; callbacks?: TaskNotificationCallbacks }> = [];
-	const active: unknown[] = [];
+	const catalogs: PresentedTask[][] = [];
 	const runtime = new Runtime(store, "/unused.ts", (() => fakeSpawn()) as never);
-	const manager = new NotificationManager({ hasUI: false, ui: {} } as never, store, runtime, "one", fakeCoordinator(offers, active), 10000);
+	const manager = new NotificationManager({ hasUI: false, ui: {} } as never, store, runtime, "one", fakeCoordinator(offers), fakeReporter(catalogs), 10000);
 	manager.start();
-	manager.close();
 	assert.equal(offers[0]!.update.eventId, `subagent:${id("9")}:ready`);
 	assert.equal(offers[0]!.update.taskKey, `subagent:${id("9")}`);
 	assert.match(offers[0]!.update.summary!, /^x: hello/);
-	assert.match(JSON.stringify(active), /role x.*turn 2.*19/);
+	assert.deepEqual(catalogs[0]![0], {
+		taskKey: `subagent:${id("9")}`,
+		source: "subagent",
+		taskId: id("9"),
+		phase: "active",
+		statusLabel: "ready",
+		createdAt: catalogs[0]![0]!.createdAt,
+		updatedAt: catalogs[0]![0]!.updatedAt,
+		startedAt: undefined,
+		endedAt: undefined,
+		summary: "x: hello",
+		meta: "role x · turn 2 · 19",
+	});
+	manager.close();
+	assert.deepEqual(catalogs.at(-1), []);
 });

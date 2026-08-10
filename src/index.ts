@@ -5,6 +5,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { registerTaskCoordinator, type TaskCoordinator } from "@4fu/pi-task-coordinator";
+import { registerTaskReporter, type PresentedTask, type TaskReporter } from "@4fu/pi-tasks";
 import { Type } from "typebox";
 import { renderCall, renderResult } from "./render.ts";
 import { appendCurrentRolePrompt, discoverRoles } from "./roles.ts";
@@ -15,6 +16,30 @@ import type { TaskRecord } from "./types.ts";
 import { terminal } from "./types.ts";
 
 const MAX_NOTIFICATION_EVENTS = 10;
+
+function singleLine(value: string, max: number): string {
+	return value.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function presentedTask(task: TaskRecord): PresentedTask {
+	const phase = task.status === "completed" ? "completed"
+		: task.status === "cancelled" ? "cancelled"
+			: task.status === "failed" || task.status === "orphaned" ? "failed"
+				: "active";
+	return {
+		taskKey: `subagent:${task.id}`,
+		source: "subagent",
+		taskId: task.id,
+		phase,
+		statusLabel: phase === "active" && task.ready ? "ready" : task.status,
+		createdAt: task.createdAt,
+		updatedAt: task.updatedAt,
+		startedAt: task.startedAt,
+		endedAt: task.endedAt,
+		summary: `${task.role}: ${singleLine(task.task, 900)}`,
+		meta: singleLine(`role ${task.role} · turn ${task.turn} · ${task.activity.at(-1)?.text ?? ""}`, 500),
+	};
+}
 
 export const DESCRIPTION = `Launch a durable subagent with fresh context, or inspect, wait for, steer, or stop an existing task.
 
@@ -70,6 +95,7 @@ export class NotificationManager {
 		private readonly runtime: Runtime,
 		private readonly sessionId: string,
 		private readonly coordinator: TaskCoordinator,
+		private readonly reporter: TaskReporter,
 		private readonly intervalMs = 500,
 	) {}
 
@@ -86,7 +112,7 @@ export class NotificationManager {
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
 		this.lastScanError = undefined;
-		this.coordinator.updateActiveTasks([]);
+		this.reporter.publishCatalog(this.sessionId, []);
 	}
 
 	scanNow(): void {
@@ -97,13 +123,7 @@ export class NotificationManager {
 			const ownTasks = this.store.list()
 				.filter((task) => task.parentSessionId === this.sessionId)
 				.sort((a, b) => a.createdAt - b.createdAt);
-			this.coordinator.updateActiveTasks(ownTasks.filter((task) => !terminal(task.status)).map((task) => ({
-				taskKey: `subagent:${task.id}`, source: "subagent", taskId: task.id,
-				status: task.ready ? "ready" : task.status,
-				startedAt: task.startedAt ?? task.createdAt,
-				summary: `${task.role}: ${task.task.replace(/\s+/g, " ").slice(0, 160)}`,
-				meta: `role ${task.role} · turn ${task.turn} · ${(task.activity.at(-1)?.text ?? "").replace(/\s+/g, " ").slice(0, 100)}`,
-			})));
+			this.reporter.publishCatalog(this.sessionId, ownTasks.map(presentedTask));
 
 			const claimed: Array<{ task: TaskRecord; event: "ready" | "terminal" }> = [];
 			for (const task of ownTasks) {
@@ -158,6 +178,7 @@ export default function extension(pi: ExtensionAPI): void {
 	if (process.env.PI_SUBAGENT_CHILD === "1") return;
 	const store = new TaskStore(join(getAgentDir(), "subagents", "tasks"));
 	const runtime = new Runtime(store);
+	const reporter = registerTaskReporter(pi, "subagent");
 	const coordinator = registerTaskCoordinator(pi, "subagent");
 	let notifications: NotificationManager | undefined;
 	let diagnosticsSignature = "";
@@ -180,7 +201,7 @@ export default function extension(pi: ExtensionAPI): void {
 		coordinator.startSession(ctx, sessionId);
 		runtime.reconcile(sessionId);
 		reportRoleDiagnostics(ctx);
-		notifications = new NotificationManager(ctx, store, runtime, sessionId, coordinator);
+		notifications = new NotificationManager(ctx, store, runtime, sessionId, coordinator, reporter);
 		notifications.start();
 	});
 	pi.on("session_shutdown", () => {

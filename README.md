@@ -49,7 +49,7 @@ The `subagent` tool is always removed from child tool lists to prevent recursive
 
 Readiness and terminal notifications are durable and deduplicated. Successfully retrieving a ready snapshot cancels its pending readiness notification; retrieving a terminal snapshot cancels all pending notifications for that task.
 
-Notifications and active-task status are aggregated with whichever other `@4fu` background-task plugins are installed. Any combination cooperates through one shared coordinator and widget while each plugin keeps its own independent runtime and durable task store. Tool rows stay compact by default; expansion adds model, thinking, role source, task, recent tools and activity, result, and errors.
+Notifications are aggregated through the shared coordinator. Active and retained terminal tasks are published to the shared Tasks widget; run `/tasks` for the complete bounded catalog. Each plugin keeps its own independent runtime and durable task store. Upgrade all installed `@4fu` task plugins together when adopting the Tasks widget, since mixed legacy and current generations cannot share task presentation. Tool rows stay compact by default; expansion adds model, thinking, role source, task, recent tools and activity, result, and errors.
 
 ## Role configuration
 
