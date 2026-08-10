@@ -90,6 +90,10 @@ Optional fields are `model` (`provider/model`), `thinking` (`off`, `minimal`, `l
 
 The package includes one default role, `oracle`. It is an ordinary role file and can be replaced through the same precedence rules; add any other roles as user or project Markdown files.
 
+### Role authoring skill
+
+The package also includes the `creating-subagent-roles` skill. Use it when adding or refining a role: ask pi to create a pi-subagent role, or run `/skill:creating-subagent-roles` when skill commands are enabled. It inventories the current tools and models, chooses the appropriate role scope, and writes a valid role file.
+
 ## Requirements
 
 - Pi 0.84.1 or newer.
@@ -118,15 +122,14 @@ pi install git:github.com/4fuu/pi-subagent
 
 ### From source
 
-Run `npm install`, then add the repository path to `~/.pi/agent/settings.json`:
+Install dependencies, then register the repository as a local package so pi loads both the extension and bundled skill:
 
-```json
-{
-  "extensions": ["/path/to/pi-subagent"]
-}
+```bash
+npm install
+pi install /absolute/path/to/pi-subagent
 ```
 
-Run `/reload` in pi after changing the extension.
+Run `/reload` in pi after changing the extension or skill.
 
 ## Development
 

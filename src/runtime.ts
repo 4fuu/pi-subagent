@@ -154,7 +154,7 @@ export class Runtime {
 	spawn(id: string): void {
 		const task = this.store.get(id);
 		try {
-			const loader = fileURLToPath(new URL("./loader.mjs", import.meta.url));
+			const loader = new URL("./loader.mjs", import.meta.url).href;
 			const child = this.spawnRunner(process.execPath, ["--import", loader, this.runner, this.store.dir, id], {
 				cwd: task.cwd,
 				detached: true,

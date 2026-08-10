@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ChildProcess } from "node:child_process";
 import type { TaskCoordinator, TaskNotificationCallbacks, TaskNotificationUpdate } from "@4fu/pi-task-coordinator";
 import type { PresentedTask, TaskReporter } from "@4fu/pi-tasks";
@@ -102,7 +103,8 @@ test("detached runner starts through jiti with Pi import aliases", () => {
 	assert.ok(invocation);
 	assert.equal(invocation.executable, process.execPath);
 	assert.equal(invocation.args[0], "--import");
-	assert.match(invocation.args[1]!, /[/\\]src[/\\]loader\.mjs$/);
+	assert.equal(new URL(invocation.args[1]!).protocol, "file:");
+	assert.match(fileURLToPath(invocation.args[1]!), /[/\\]src[/\\]loader\.mjs$/);
 	assert.doesNotMatch(invocation.args.join(" "), /experimental-(?:strip|transform)-types/);
 	assert.equal(invocation.env.PI_SUBAGENT_CHILD, "1");
 	const aliases = JSON.parse(invocation.env.JITI_ALIAS!) as Record<string, string>;

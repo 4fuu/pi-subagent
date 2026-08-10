@@ -1,6 +1,6 @@
 {
   "name": "@4fu/pi-subagent",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Durable, low-noise background subagents for Pi",
   "license": "MIT",
   "author": "4fuu",
@@ -8,8 +8,11 @@
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "keywords": ["pi-package", "pi-extension", "subagent"],
-  "files": ["src", "roles", "README.md", "LICENSE"],
-  "pi": { "extensions": ["./src/index.ts"] },
+  "files": ["src", "roles", "skills", "README.md", "LICENSE"],
+  "pi": {
+    "extensions": ["./src/index.ts"],
+    "skills": ["./skills"]
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && node --import tsx --test tests/*.test.ts"
