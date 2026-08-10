@@ -235,6 +235,7 @@ export class Runtime {
 			const state = this.store.state(task);
 			state.status = "failed";
 			state.error = error instanceof Error ? error.message : String(error);
+			state.failureKind = "infrastructure";
 			state.endedAt = Date.now();
 			this.store.saveState(id, state);
 			this.store.event(id, "terminal", { status: "failed", at: Date.now() });
@@ -254,6 +255,7 @@ export class Runtime {
 			const state: State = this.store.state(current);
 			state.status = this.store.has(task.id, "stop.requested") ? "cancelled" : "orphaned";
 			state.error = state.status === "orphaned" ? "Detached runner exited without a terminal state" : undefined;
+			state.failureKind = state.status === "orphaned" ? "infrastructure" : undefined;
 			state.endedAt = Date.now();
 			this.store.saveState(task.id, state);
 			this.store.event(task.id, "terminal", { status: state.status, at: Date.now() });

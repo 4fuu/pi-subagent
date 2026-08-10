@@ -80,13 +80,14 @@ export class TaskStore {
 	}
 
 	get(id: string): TaskRecord {
+		const directory = this.taskDir(id);
 		try {
-			const launch = this.read<Launch>(join(this.taskDir(id), "launch.json"));
-			const state = this.read<State>(join(this.taskDir(id), "state.json"));
+			const launch = this.read<Launch>(join(directory, "launch.json"));
+			const state = this.read<State>(join(directory, "state.json"));
 			if (launch.id !== id || !Array.isArray(state.activity)) throw new Error("invalid record");
 			return { ...launch, ...state };
-		} catch (error) {
-			if (error instanceof Error && error.message.startsWith("invalid taskId")) throw error;
+		} catch {
+			if (existsSync(directory)) throw new Error(`taskId ${id} is corrupt or unreadable; diagnosticsPath: ${directory}`);
 			throw new Error(`unknown taskId ${id}`);
 		}
 	}
@@ -102,8 +103,8 @@ export class TaskStore {
 	}
 
 	state(task: TaskRecord): State {
-		const { status, updatedAt, startedAt, endedAt, pid, ready, result, error, turn, tokens, messageAcceptedAt, activity } = task;
-		return { status, updatedAt, startedAt, endedAt, pid, ready, result, error, turn, tokens, messageAcceptedAt, activity };
+		const { status, updatedAt, startedAt, endedAt, pid, ready, result, error, failureKind, turn, tokens, messageAcceptedAt, activity } = task;
+		return { status, updatedAt, startedAt, endedAt, pid, ready, result, error, failureKind, turn, tokens, messageAcceptedAt, activity };
 	}
 
 	list(): TaskRecord[] {
@@ -324,16 +325,18 @@ export class TaskStore {
 	}
 
 	snapshot(task: TaskRecord): Snapshot {
+		const isTerminal = terminal(task.status);
+		const activity = isTerminal ? undefined : task.activity.slice(-3).map(({ kind, text }) => ({ kind, text }));
 		return {
 			taskId: task.id,
 			status: task.status,
 			role: task.role,
-			ready: !!task.ready,
-			durationMs: (task.endedAt ?? Date.now()) - (task.startedAt ?? task.createdAt),
+			ready: !isTerminal && task.ready ? true : undefined,
 			result: task.result?.slice(0, 12000),
 			error: task.error,
 			messageAcceptedAt: task.messageAcceptedAt,
-			activity: task.activity.slice(-12),
+			activity: activity && activity.length > 0 ? activity : undefined,
+			diagnosticsPath: task.failureKind === "infrastructure" ? this.taskDir(task.id) : undefined,
 		};
 	}
 

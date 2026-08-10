@@ -325,6 +325,7 @@ export async function run(storeDir: string, id: string): Promise<void> {
 			state = store.beginFinishing(id, true);
 			state.status = "failed";
 			state.error = error instanceof Error ? error.message : String(error);
+			state.failureKind = "infrastructure";
 			state.endedAt = Date.now();
 			save();
 		}
@@ -343,6 +344,7 @@ export async function run(storeDir: string, id: string): Promise<void> {
 			state = store.beginFinishing(id, true);
 			state.status = "failed";
 			state.error = "Subagent runner exited without a terminal state";
+			state.failureKind = "infrastructure";
 			state.endedAt = Date.now();
 			save();
 		}

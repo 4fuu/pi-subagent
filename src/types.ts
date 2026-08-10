@@ -46,6 +46,7 @@ export interface State {
 	ready?: boolean;
 	result?: string;
 	error?: string;
+	failureKind?: "infrastructure";
 	turn: number;
 	tokens?: number;
 	messageAcceptedAt?: number;
@@ -71,11 +72,11 @@ export interface Snapshot {
 	taskId: string;
 	status: Status;
 	role: string;
-	ready: boolean;
-	durationMs: number;
+	ready?: true;
 	result?: string;
 	error?: string;
 	messageQueuedAt?: number;
 	messageAcceptedAt?: number;
-	activity: Activity[];
+	activity?: Array<Pick<Activity, "kind" | "text">>;
+	diagnosticsPath?: string;
 }

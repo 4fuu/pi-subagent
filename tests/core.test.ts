@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -32,6 +32,7 @@ function createTask(store: TaskStore, options: {
 	createdAt?: number;
 	ready?: boolean;
 	result?: string;
+	failureKind?: "infrastructure";
 }): void {
 	const createdAt = options.createdAt ?? Date.now();
 	const launch: Launch = {
@@ -52,6 +53,7 @@ function createTask(store: TaskStore, options: {
 		pid: options.pid,
 		ready: options.ready,
 		result: options.result,
+		failureKind: options.failureKind,
 		turn: 2,
 		activity: Array.from({ length: 20 }, (_, index) => ({ at: createdAt, kind: "tool", text: String(index) })),
 	};
@@ -167,22 +169,56 @@ test("literal readiness matches across chunks but not across reset streams", () 
 	assert.equal(steeringAllowed(3, 3, true), false);
 });
 
-test("store snapshots are bounded, private, and terminal state is immutable", () => {
+test("model snapshots are compact while durable state and expanded TUI stay rich", () => {
 	const store = new TaskStore(mkdtempSync(join(tmpdir(), "store-")));
 	createTask(store, { id: id("2"), sessionId: "one", result: "x".repeat(20000) });
 	const task = store.get(id("2"));
-	assert.equal(store.snapshot(task).activity.length, 12);
-	assert.equal(store.snapshot(task).result?.length, 12000);
-	assert.match(resultLines(task, true).join("\n"), /turn 2/);
+	const snapshot = store.snapshot(task);
+	assert.deepEqual(snapshot.activity, [17, 18, 19].map((text) => ({ kind: "tool", text: String(text) })));
+	assert.equal(snapshot.result?.length, 12000);
+	assert.equal("durationMs" in snapshot, false);
+	assert.equal("ready" in JSON.parse(JSON.stringify(snapshot)), false);
+	assert.equal(store.get(task.id).activity.length, 20);
+	assert.equal(JSON.parse(readFileSync(join(store.taskDir(task.id), "state.json"), "utf8")).activity.length, 20);
+	const expanded = resultLines(task, true).join("\n");
+	assert.match(expanded, /turn 2/);
+	assert.match(expanded, /role \/x\.md/);
+	assert.match(expanded, /task hello/);
+	assert.match(expanded, /tool: 19/);
+	assert.match(expanded, /result:/);
 	assert.equal(statSync(store.dir).mode & 0o777, 0o700);
 
 	const completed = store.state(task);
 	completed.status = "completed";
 	completed.endedAt = Date.now();
 	store.saveState(task.id, completed);
+	const terminalSnapshot = store.snapshot(store.get(task.id));
+	assert.equal("activity" in JSON.parse(JSON.stringify(terminalSnapshot)), false);
+	assert.equal("ready" in JSON.parse(JSON.stringify(terminalSnapshot)), false);
+	assert.equal(terminalSnapshot.diagnosticsPath, undefined);
 	const stale = store.state(task);
 	stale.status = "running";
 	assert.equal(store.saveState(task.id, stale).status, "completed");
+});
+
+test("diagnostics paths identify only failed, orphaned, and corrupt existing tasks", () => {
+	const store = new TaskStore(mkdtempSync(join(tmpdir(), "diagnostics-")));
+	for (const [suffix, status, failureKind] of [
+		["70", "failed", undefined],
+		["71", "failed", "infrastructure"],
+		["72", "orphaned", "infrastructure"],
+		["73", "cancelled", undefined],
+		["74", "running", undefined],
+	] as const) {
+		createTask(store, { id: id(suffix), sessionId: "one", status, failureKind });
+		assert.equal(store.snapshot(store.get(id(suffix))).diagnosticsPath, failureKind ? store.taskDir(id(suffix)) : undefined);
+	}
+	const corrupt = id("75");
+	mkdirSync(store.taskDir(corrupt));
+	writeFileSync(join(store.taskDir(corrupt), "state.json"), "not json");
+	assert.throws(() => store.get(corrupt), new RegExp(`corrupt or unreadable; diagnosticsPath: ${store.taskDir(corrupt)}`));
+	assert.throws(() => store.get(id("76")), /unknown taskId/);
+	assert.throws(() => store.get("foreign"), /invalid taskId/);
 });
 
 test("taskId read, wait, stop, and message reject another parent session", async () => {
