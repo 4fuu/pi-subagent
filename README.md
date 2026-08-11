@@ -53,7 +53,7 @@ Notifications are aggregated through the shared coordinator. Active and retained
 
 ## Role configuration
 
-Roles are Markdown files. They are rediscovered for the current working directory before every parent agent run and again at launch, so the model always sees the current valid role list. There is no role-count limit.
+Roles are Markdown files. The prompt catalog is snapshotted for the current working directory at session start (including reload, resume, and fork) and after successful compaction, so it stays stable between those boundaries. Every launch still rediscovers role files: valid edits take effect immediately even if the prompt catalog is older, while invalid Markdown fails that launch with its source path and parser diagnostic. There is no role-count limit.
 
 Precedence from lowest to highest is:
 
@@ -61,7 +61,7 @@ Precedence from lowest to highest is:
 2. User roles in `$PI_CODING_AGENT_DIR/subagents/` (normally `~/.pi/agent/subagents/`)
 3. Project roles in `<cwd>/.pi/subagents/`
 
-A valid higher-priority role replaces a role with the same name. An invalid file produces a visible diagnostic but never erases a valid lower-priority role.
+A valid higher-priority role replaces a role with the same name. An invalid higher-priority `<name>.md` shadows lower-priority definitions until fixed, produces a visible diagnostic, and returns the same detailed error if that role is launched.
 
 ### Markdown role format
 

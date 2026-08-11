@@ -8,6 +8,13 @@ const NAMES = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const KNOWN = new Set(["name", "description", "tools", "model", "thinking", "maxTurns"]);
 
 export function parseRole(text: string, source: string): Role {
+	const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	if (!normalized.startsWith("---\n")) {
+		throw new Error("role must start with a YAML frontmatter delimiter (`---`) on its own line");
+	}
+	if (!normalized.includes("\n---\n")) {
+		throw new Error("role YAML frontmatter must end with a delimiter (`---`) on its own line before the body");
+	}
 	const { frontmatter: raw, body: rawBody } = parseFrontmatter<Record<string, unknown>>(text);
 	for (const key of Object.keys(raw)) {
 		if (!KNOWN.has(key)) throw new Error(`unknown field ${key}`);
@@ -60,11 +67,18 @@ export interface RoleDiscoveryOptions {
 	userDir?: string;
 }
 
-export function discoverRoles(cwd: string, options: RoleDiscoveryOptions = {}): { roles: Map<string, Role>; diagnostics: string[] } {
+export interface RoleDiscovery {
+	roles: Map<string, Role>;
+	diagnostics: string[];
+	invalidRoles: Map<string, string>;
+}
+
+export function discoverRoles(cwd: string, options: RoleDiscoveryOptions = {}): RoleDiscovery {
 	const packageDir = options.packageDir ?? fileURLToPath(new URL("../roles", import.meta.url));
 	const userDir = options.userDir ?? join(getAgentDir(), "subagents");
 	const roles = new Map<string, Role>();
 	const diagnostics: string[] = [];
+	const invalidRoles = new Map<string, string>();
 	for (const dir of [packageDir, userDir, join(cwd, ".pi", "subagents")]) {
 		let files: string[];
 		try {
@@ -77,23 +91,29 @@ export function discoverRoles(cwd: string, options: RoleDiscoveryOptions = {}): 
 		}
 		for (const file of files) {
 			const path = join(dir, file);
+			const stem = basename(file, ".md");
 			try {
 				const role = parseRole(readFileSync(path, "utf8"), path);
 				roles.set(role.name, role);
+				invalidRoles.delete(role.name);
 			} catch (error) {
-				diagnostics.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
+				const diagnostic = `${path}: ${error instanceof Error ? error.message : String(error)}`;
+				diagnostics.push(diagnostic);
+				if (NAMES.test(stem)) {
+					roles.delete(stem);
+					invalidRoles.set(stem, diagnostic);
+				}
 			}
 		}
 	}
-	return { roles, diagnostics };
+	return { roles, diagnostics, invalidRoles };
 }
 
 export const ROLE_PROMPT_BEGIN = "<pi_subagent_roles>";
 export const ROLE_PROMPT_END = "</pi_subagent_roles>";
 
-export function rolePrompt(cwd: string, options?: RoleDiscoveryOptions): string {
-	const { roles } = discoverRoles(cwd, options);
-	const rows = [...roles.values()].map((role) => `- ${role.name}: ${role.description}`);
+export function rolePrompt(discovery: RoleDiscovery): string {
+	const rows = [...discovery.roles.values()].map((role) => `- ${role.name}: ${role.description}`);
 	return [
 		ROLE_PROMPT_BEGIN,
 		"Available subagent roles:",
@@ -102,11 +122,23 @@ export function rolePrompt(cwd: string, options?: RoleDiscoveryOptions): string 
 	].join("\n");
 }
 
-export function appendCurrentRolePrompt(systemPrompt: string, cwd: string, options?: RoleDiscoveryOptions): string {
+export function appendRolePrompt(systemPrompt: string, catalog: string): string {
 	const begin = systemPrompt.indexOf(ROLE_PROMPT_BEGIN);
 	const end = systemPrompt.indexOf(ROLE_PROMPT_END);
 	const base = begin >= 0 && end >= begin
 		? `${systemPrompt.slice(0, begin)}${systemPrompt.slice(end + ROLE_PROMPT_END.length)}`.trimEnd()
 		: systemPrompt.trimEnd();
-	return `${base}\n\n${rolePrompt(cwd, options)}`;
+	return `${base}\n\n${catalog}`;
+}
+
+export function resolveRoleForLaunch(discovery: RoleDiscovery, name: string): Role {
+	const diagnostic = discovery.invalidRoles.get(name);
+	if (diagnostic) {
+		throw new Error(`role ${JSON.stringify(name)} is invalid: ${diagnostic}\nFix the Markdown frontmatter and retry; role files are reloaded on every launch.`);
+	}
+	const role = discovery.roles.get(name);
+	if (!role) {
+		throw new Error(`unknown role ${JSON.stringify(name)}; available: ${[...discovery.roles.keys()].join(", ") || "none"}`);
+	}
+	return role;
 }

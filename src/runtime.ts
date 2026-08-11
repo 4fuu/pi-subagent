@@ -159,6 +159,7 @@ export class Runtime {
 				cwd: task.cwd,
 				detached: true,
 				stdio: "ignore",
+				windowsHide: true,
 				env: { ...process.env, PI_SUBAGENT_CHILD: "1", JITI_ALIAS: runnerAliases() },
 			});
 			child.once("error", (error) => this.failStart(id, error));

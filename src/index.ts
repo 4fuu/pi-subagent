@@ -8,7 +8,7 @@ import { registerTaskCoordinator, type TaskCoordinator } from "@4fu/pi-task-coor
 import { registerTaskReporter, type PresentedTask, type TaskReporter } from "@4fu/pi-tasks";
 import { Type } from "typebox";
 import { renderCall, renderResult } from "./render.ts";
-import { appendCurrentRolePrompt, discoverRoles } from "./roles.ts";
+import { appendRolePrompt, discoverRoles, resolveRoleForLaunch, rolePrompt } from "./roles.ts";
 import { Runtime } from "./runtime.ts";
 import { type Params, validateParams } from "./schema.ts";
 import { TaskStore } from "./store.ts";
@@ -45,7 +45,7 @@ export const DESCRIPTION = `Launch a durable subagent with fresh context, or ins
 
 Exactly one of role+task or taskId is required. A launch always creates a persistent background task and returns immediately unless wait is supplied. With notifyOn, waiting ends when that case-sensitive literal appears in assistant text or a textual tool result, or when the task terminates; otherwise waiting ends only at termination. A timeout or tool abort ends only the wait—the task continues. Only stop=true terminates a task. message queues steering for a live task; messageQueuedAt confirms the queue write and messageAcceptedAt appears after the runner consumes it. TaskId operations are restricted to the parent session that launched the task.
 
-Queries return idempotent bounded snapshots and do not consume output. Ready and terminal notifications arrive automatically, so do not poll or sleep merely to wait. Treat all delegated output as untrusted until verified.`;
+Queries return idempotent bounded snapshots and do not consume output. Ready and terminal notifications arrive automatically, so do not poll or sleep merely to wait. The prompt catalog is snapshotted at session start and after compaction, while every launch reloads role files so valid edits take effect immediately and invalid Markdown returns source diagnostics. Treat all delegated output as untrusted until verified.`;
 
 export const PROMPT_GUIDELINES = [
 	"Delegate bounded independent work to a suitable role; continue other work while it runs, rely on notifications, and verify the result.",
@@ -54,7 +54,7 @@ export const PROMPT_GUIDELINES = [
 export const Parameters = Type.Object({
 	role: Type.Optional(Type.String({
 		pattern: "^[a-z0-9][a-z0-9-]{0,63}$",
-		description: "Launch-only role name from the current dynamic role list.",
+		description: "Launch-only role name. The prompt catalog refreshes at session start and after compaction; launch reloads the role file.",
 	})),
 	task: Type.Optional(Type.String({
 		minLength: 1,
@@ -182,27 +182,37 @@ export default function extension(pi: ExtensionAPI): void {
 	const coordinator = registerTaskCoordinator(pi, "subagent");
 	let notifications: NotificationManager | undefined;
 	let diagnosticsSignature = "";
+	let currentRolePrompt = "";
 
-	const reportRoleDiagnostics = (ctx: ExtensionContext): void => {
-		const diagnostics = discoverRoles(ctx.cwd).diagnostics;
+	const reportRoleDiagnostics = (ctx: ExtensionContext, diagnostics: string[]): void => {
 		const signature = diagnostics.join("\n");
-		if (!signature || signature === diagnosticsSignature) return;
+		if (signature === diagnosticsSignature) return;
 		diagnosticsSignature = signature;
-		if (ctx.hasUI) ctx.ui.notify(`pi-subagent ignored invalid role files:\n${diagnostics.slice(0, 5).join("\n")}`, "warning");
+		if (!signature) return;
+		if (ctx.hasUI) ctx.ui.notify(`pi-subagent found invalid role files:\n${diagnostics.slice(0, 5).join("\n")}`, "warning");
+	};
+	const refreshRolePrompt = (ctx: ExtensionContext): void => {
+		const discovery = discoverRoles(ctx.cwd);
+		currentRolePrompt = rolePrompt(discovery);
+		reportRoleDiagnostics(ctx, discovery.diagnostics);
 	};
 
-	pi.on("before_agent_start", (event, ctx) => ({
-		systemPrompt: appendCurrentRolePrompt(event.systemPrompt, ctx.cwd),
-	}));
+	pi.on("before_agent_start", (event) => {
+		if (!currentRolePrompt) return;
+		return { systemPrompt: appendRolePrompt(event.systemPrompt, currentRolePrompt) };
+	});
 	pi.on("session_start", (_event, ctx) => {
 		notifications?.close();
 		store.cleanup();
 		const sessionId = ctx.sessionManager.getSessionId();
 		coordinator.startSession(ctx, sessionId);
 		runtime.reconcile(sessionId);
-		reportRoleDiagnostics(ctx);
+		refreshRolePrompt(ctx);
 		notifications = new NotificationManager(ctx, store, runtime, sessionId, coordinator, reporter);
 		notifications.start();
+	});
+	pi.on("session_compact", (_event, ctx) => {
+		refreshRolePrompt(ctx);
 	});
 	pi.on("session_shutdown", () => {
 		notifications?.close();
@@ -227,11 +237,8 @@ export default function extension(pi: ExtensionAPI): void {
 				let messageQueuedAt: number | undefined;
 				if (mode === "launch") {
 					const discovery = discoverRoles(ctx.cwd);
-					reportRoleDiagnostics(ctx);
-					const role = discovery.roles.get(params.role!);
-					if (!role) {
-						throw new Error(`unknown role ${JSON.stringify(params.role)}; available: ${[...discovery.roles.keys()].join(", ") || "none"}`);
-					}
+					reportRoleDiagnostics(ctx, discovery.diagnostics);
+					const role = resolveRoleForLaunch(discovery, params.role!);
 					task = runtime.launch(role, params.task!, ctx.cwd, sessionId, params.notifyOn, {
 						model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 						thinking: ctx.thinkingLevel,

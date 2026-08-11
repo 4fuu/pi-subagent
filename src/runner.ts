@@ -31,6 +31,19 @@ export function steeringAllowed(turn: number, max: number, streaming: boolean): 
 	return streaming && !reachedTurnLimit(turn, max);
 }
 
+export type ActivityMerge = "append" | "delta" | "replace";
+
+export function mergeActivityText(previous: string | undefined, value: string, merge: ActivityMerge): string {
+	const normalized = value.replace(/\s+/g, " ");
+	if (merge === "delta") {
+		return `${previous ?? ""}${previous === undefined ? normalized.trimStart() : normalized}`.slice(-500);
+	}
+	const clean = normalized.trim();
+	if (!clean) return previous ?? "";
+	if (merge === "replace" || previous === undefined) return clean.slice(-500);
+	return `${previous} ${clean}`.slice(-500);
+}
+
 export class LiteralMatcher {
 	private carry = "";
 	private readonly needle?: string;
@@ -92,15 +105,20 @@ export async function run(storeDir: string, id: string): Promise<void> {
 		activityTimer = undefined;
 		if (!terminal(state.status)) save();
 	};
-	const activity = (kind: string, value: string): void => {
-		const clean = value.replace(/\s+/g, " ").trim();
-		if (!clean || terminal(state.status)) return;
+	const activity = (kind: string, value: string, merge: ActivityMerge = "append"): void => {
+		if (!value || terminal(state.status)) return;
 		const now = Date.now();
 		const last = state.activity.at(-1);
 		if (last?.kind === kind && now - last.at < 1000) {
+			const text = mergeActivityText(last.text, value, merge);
+			if (!text.trim()) return;
 			last.at = now;
-			last.text = `${last.text} ${clean}`.slice(-500);
-		} else state.activity.push({ at: now, kind, text: clean.slice(0, 500) });
+			last.text = text;
+		} else {
+			const text = mergeActivityText(undefined, value, merge);
+			if (!text.trim()) return;
+			state.activity.push({ at: now, kind, text });
+		}
 		if (!activityTimer) {
 			activityTimer = setTimeout(flushActivity, 100);
 			activityTimer.unref?.();
@@ -122,10 +140,10 @@ export async function run(storeDir: string, id: string): Promise<void> {
 		appendFileSync(transcriptPath, line, { mode: 0o600 });
 		transcriptBytes += line.length;
 	};
-	const visible = (kind: "assistant" | "tool-result", value: string): void => {
+	const visible = (kind: "assistant" | "tool-result", value: string, merge: ActivityMerge = "append"): void => {
 		if (!value) return;
 		appendTranscript(kind, value);
-		activity(kind, value);
+		activity(kind, value, merge);
 		if (!state.ready && matcher.feed(value)) {
 			flushActivity();
 			state.ready = true;
@@ -228,14 +246,14 @@ export async function run(storeDir: string, id: string): Promise<void> {
 		unsubscribe = session.subscribe((event: AgentSessionEvent) => {
 			if (event.type === "message_start" && event.message.role === "assistant") matcher.reset();
 			if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-				visible("assistant", event.assistantMessageEvent.delta);
+				visible("assistant", event.assistantMessageEvent.delta, "delta");
 			}
 			if (event.type === "tool_execution_start") {
 				const path = typeof event.args?.path === "string" ? ` ${event.args.path}` : "";
 				activity("tool", `${event.toolName}${path}`);
 			}
 			if (event.type === "tool_execution_update") {
-				activity("tool-progress", textualContent(event.partialResult?.content));
+				activity("tool-progress", textualContent(event.partialResult?.content), "replace");
 			}
 			if (event.type === "tool_execution_end") {
 				matcher.reset();

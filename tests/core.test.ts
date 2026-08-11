@@ -11,8 +11,8 @@ import type { TaskCoordinator, TaskNotificationCallbacks, TaskNotificationUpdate
 import type { PresentedTask, TaskReporter } from "@4fu/pi-tasks";
 import { DESCRIPTION, NotificationManager, PROMPT_GUIDELINES } from "../src/index.ts";
 import { resultLines } from "../src/render.ts";
-import { appendCurrentRolePrompt, discoverRoles, parseRole } from "../src/roles.ts";
-import { LiteralMatcher, reachedTurnLimit, steeringAllowed, turnLimitWouldTruncate } from "../src/runner.ts";
+import { appendRolePrompt, discoverRoles, parseRole, resolveRoleForLaunch, rolePrompt } from "../src/roles.ts";
+import { LiteralMatcher, mergeActivityText, reachedTurnLimit, steeringAllowed, turnLimitWouldTruncate } from "../src/runner.ts";
 import { Runtime } from "../src/runtime.ts";
 import { validateParams } from "../src/schema.ts";
 import { TaskStore } from "../src/store.ts";
@@ -84,11 +84,11 @@ function fakeReporter(catalogs: PresentedTask[][] = []): TaskReporter {
 	};
 }
 
-test("detached runner starts through jiti with Pi import aliases", () => {
+test("detached runner starts hidden through jiti with Pi import aliases", () => {
 	const store = new TaskStore(mkdtempSync(join(tmpdir(), "runner-start-")));
-	let invocation: { executable: string; args: readonly string[]; env: NodeJS.ProcessEnv } | undefined;
-	const runtime = new Runtime(store, undefined, ((executable: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv } | undefined) => {
-		invocation = { executable, args, env: options!.env as NodeJS.ProcessEnv };
+	let invocation: { executable: string; args: readonly string[]; env: NodeJS.ProcessEnv; windowsHide?: boolean } | undefined;
+	const runtime = new Runtime(store, undefined, ((executable: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv; windowsHide?: boolean } | undefined) => {
+		invocation = { executable, args, env: options!.env as NodeJS.ProcessEnv, windowsHide: options!.windowsHide };
 		return fakeSpawn();
 	}) as never);
 	runtime.launch({
@@ -107,6 +107,7 @@ test("detached runner starts through jiti with Pi import aliases", () => {
 	assert.match(fileURLToPath(invocation.args[1]!), /[/\\]src[/\\]loader\.mjs$/);
 	assert.doesNotMatch(invocation.args.join(" "), /experimental-(?:strip|transform)-types/);
 	assert.equal(invocation.env.PI_SUBAGENT_CHILD, "1");
+	assert.equal(invocation.windowsHide, true);
 	const aliases = JSON.parse(invocation.env.JITI_ALIAS!) as Record<string, string>;
 	assert.match(aliases["@earendil-works/pi-coding-agent"]!, /[/\\]pi-coding-agent[/\\]dist[/\\]index\.js$/);
 	assert.match(aliases["@earendil-works/pi-agent-core"]!, /[/\\]pi-agent-core[/\\]dist[/\\]index\.js$/);
@@ -132,9 +133,11 @@ test("strict role parser supports Pi frontmatter and removes recursive access", 
 	assert.throws(() => parseRole(markdown("y"), "/a/x.md"), /filename/);
 	assert.throws(() => parseRole(markdown().replace("maxTurns: 12", "maxTurns: 0"), "/a/x.md"), /1 to 500/);
 	assert.throws(() => parseRole(markdown().replace("maxTurns: 12", "maxTurns: 501"), "/a/x.md"), /1 to 500/);
+	assert.throws(() => parseRole("name: x", "/a/x.md"), /must start with a YAML frontmatter delimiter/);
+	assert.throws(() => parseRole("---\nname: x", "/a/x.md"), /frontmatter must end with a delimiter/);
 });
 
-test("role discovery is package < user < project and invalid overrides preserve valid roles", () => {
+test("role discovery is package < user < project and invalid overrides report the requested role", () => {
 	const root = mkdtempSync(join(tmpdir(), "roles-"));
 	const packageDir = join(root, "package");
 	const userDir = join(root, "user");
@@ -144,16 +147,25 @@ test("role discovery is package < user < project and invalid overrides preserve 
 	mkdirSync(join(project, ".pi", "subagents"), { recursive: true });
 	writeFileSync(join(packageDir, "x.md"), markdown("x", "package"));
 	writeFileSync(join(userDir, "x.md"), markdown("x", "user"));
-	writeFileSync(join(project, ".pi", "subagents", "x.md"), "bad");
+	writeFileSync(join(project, ".pi", "subagents", "x.md"), `---
+name: x
+description: broken: nested mapping
+tools: [read]
+---
+Body.`);
 	const discovery = discoverRoles(project, { packageDir, userDir });
-	assert.equal(discovery.roles.get("x")?.description, "user");
+	assert.equal(discovery.roles.has("x"), false);
 	assert.equal(discovery.diagnostics.length, 1);
+	assert.match(discovery.invalidRoles.get("x")!, /project.*x\.md.*Nested mappings.*line 2, column 14/s);
+	assert.throws(() => resolveRoleForLaunch(discovery, "x"), /role "x" is invalid:.*Fix the Markdown frontmatter and retry/s);
 
 	writeFileSync(join(project, ".pi", "subagents", "x.md"), markdown("x", "project"));
-	assert.equal(discoverRoles(project, { packageDir, userDir }).roles.get("x")?.description, "project");
+	const fixed = discoverRoles(project, { packageDir, userDir });
+	assert.equal(resolveRoleForLaunch(fixed, "x").description, "project");
+	assert.equal(fixed.invalidRoles.has("x"), false);
 });
 
-test("dynamic role prompt replaces its previous layer and follows cwd", () => {
+test("role prompt snapshots stay fixed until regenerated and replace their previous layer", () => {
 	const root = mkdtempSync(join(tmpdir(), "role-prompt-"));
 	const packageDir = join(root, "package");
 	const userDir = join(root, "user");
@@ -164,14 +176,31 @@ test("dynamic role prompt replaces its previous layer and follows cwd", () => {
 	}
 	writeFileSync(join(first, ".pi", "subagents", "one.md"), markdown("one"));
 	writeFileSync(join(second, ".pi", "subagents", "two.md"), markdown("two"));
-	const firstPrompt = appendCurrentRolePrompt("base", first, { packageDir, userDir });
-	const secondPrompt = appendCurrentRolePrompt(firstPrompt, second, { packageDir, userDir });
+	const firstCatalog = rolePrompt(discoverRoles(first, { packageDir, userDir }));
+	const firstPrompt = appendRolePrompt("base", firstCatalog);
+	writeFileSync(join(first, ".pi", "subagents", "one.md"), markdown("one", "changed"));
+	const unchangedPrompt = appendRolePrompt("base", firstCatalog);
+	const secondPrompt = appendRolePrompt(firstPrompt, rolePrompt(discoverRoles(second, { packageDir, userDir })));
 	assert.match(firstPrompt, /one: useful/);
+	assert.equal(unchangedPrompt, firstPrompt);
+	assert.doesNotMatch(unchangedPrompt, /one: changed/);
 	assert.doesNotMatch(secondPrompt, /one: useful/);
 	assert.match(secondPrompt, /two: useful/);
 	assert.match(secondPrompt, /Available subagent roles:/);
 	assert.doesNotMatch(secondPrompt, /Launch one with/);
 	assert.equal((secondPrompt.match(/<pi_subagent_roles>/g) ?? []).length, 1);
+});
+
+test("activity merging preserves streamed text boundaries and replaces progress snapshots", () => {
+	let text = mergeActivityText(undefined, "结", "delta");
+	text = mergeActivityText(text, "果", "delta");
+	text = mergeActivityText(text, "与 READ", "delta");
+	text = mergeActivityText(text, "ME", "delta");
+	assert.equal(text, "结果与 README");
+	text = mergeActivityText(text, " 的说明", "delta");
+	assert.equal(text, "结果与 README 的说明");
+	assert.equal(mergeActivityText("first", "complete snapshot", "replace"), "complete snapshot");
+	assert.equal(mergeActivityText("grep", "src", "append"), "grep src");
 });
 
 test("schema exposes one narrow launch/query surface with UTF-8 bounds", () => {
